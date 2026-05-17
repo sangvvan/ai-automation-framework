@@ -1,0 +1,6 @@
+# Per-environment test settings. Empty allow-list means "no host restriction"
+# (CLI users only; the web UI uses auth/role instead).
+allowedHosts: []
+defaultViewport:
+  width: 1280
+  height: 800
