@@ -10,6 +10,9 @@ import { runScenarios } from "../../runner/runner";
 import { validateScenarioResult } from "../../validator/validate";
 import { writeJsonReport } from "../../reporter/json";
 import { writeHtmlReport } from "../../reporter/html";
+import { buildProvider } from "../../ai/factory";
+import { designScenarios } from "../../ai/agents/test-design";
+import { persistRun } from "../../db/runs";
 import type { RunSummary } from "../../validation";
 import type { CliCommand } from "../commands";
 import type { ExecutableScenario } from "../../validation";
@@ -69,29 +72,45 @@ export const runCommand: CliCommand = {
         warnings: mapStepsToActions(s.steps, analysis, s.pageUrl).warnings,
       }));
     } else {
-      // explore mode: requires SPRINT-002 generator. For SPRINT-001 we
-      // emit a minimal "open the page and check title" scenario so the
-      // skeleton can be exercised.
-      scenarios = [
-        {
-          id: `EXPLORE_${runId}_001`,
-          title: `Open ${url} and verify it loads`,
-          type: "navigation",
-          priority: "P2",
-          pageUrl: url,
-          origin: "ai-generated",
-          steps: [
-            {
-              index: 0,
-              description: `Open ${url}`,
-              action: { keyword: "open_page", url },
-              resolved: true,
-            },
-          ],
-          expectedResult: { text: analysis.title },
-          warnings: [],
-        },
-      ];
+      const provider = buildProvider({
+        config: cfg,
+        role: "design",
+        tracePath: path.join(evidenceDir, "ai-trace.jsonl"),
+      });
+      try {
+        scenarios = await designScenarios({
+          analysis,
+          provider,
+          maxScenarios: cfg.generation.maxScenarios,
+          categories: cfg.generation.categories,
+        });
+      } catch (err) {
+        // No provider configured/usable — fall back to a single
+        // "open page" scenario so the skeleton still produces output.
+        process.stderr.write(
+          `Warning: AI generation unavailable (${(err as Error).message}); emitting smoke-only scenario.\n`,
+        );
+        scenarios = [
+          {
+            id: `EXPLORE_${runId}_001`,
+            title: `Open ${url} and verify it loads`,
+            type: "navigation",
+            priority: "P2",
+            pageUrl: url,
+            origin: "ai-generated",
+            steps: [
+              {
+                index: 0,
+                description: `Open ${url}`,
+                action: { keyword: "open_page", url },
+                resolved: true,
+              },
+            ],
+            expectedResult: { text: analysis.title },
+            warnings: [],
+          },
+        ];
+      }
     }
 
     // 3. Run
@@ -158,6 +177,14 @@ export const runCommand: CliCommand = {
       path.join(evidenceDir, "run-summary.json"),
       JSON.stringify({ runId, jsonPath, htmlPath, totals }, null, 2),
     );
+
+    // Persist to DB if available (no-op otherwise). Lets the Review UI
+    // show generated scenarios as pending_review.
+    await persistRun(summary, { jsonPath, htmlPath }).catch((err) => {
+      process.stderr.write(
+        `Note: DB persistence skipped (${(err as Error).message}).\n`,
+      );
+    });
 
     return totals.failed > 0 ? 1 : 0;
   },
