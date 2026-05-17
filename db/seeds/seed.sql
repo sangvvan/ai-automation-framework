@@ -1,0 +1,16 @@
+-- db/seeds/seed.sql
+-- Development seed data only. NEVER run in production.
+-- Gated by NODE_ENV in scripts/db/seed.ts
+--
+-- Add INSERT statements below as your schema grows. Keep this file
+-- idempotent (use ON CONFLICT DO NOTHING) so it can be re-run safely.
+
+-- example:
+-- INSERT INTO users (id, email, full_name, password_hash, role)
+-- VALUES (
+--   '00000000-0000-0000-0000-000000000001',
+--   'admin@example.com',
+--   'Seeded Admin',
+--   '$2a$12$replace_with_bcrypt_hash_of_a_known_dev_password',
+--   'admin'
+-- ) ON CONFLICT (email) DO NOTHING;
