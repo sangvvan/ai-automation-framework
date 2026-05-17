@@ -1,0 +1,11 @@
+{
+  "runId": "R-20260517-110010-b945",
+  "jsonPath": "reports/json/R-20260517-110010-b945.json",
+  "htmlPath": "reports/html/R-20260517-110010-b945/index.html",
+  "totals": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0
+  }
+}

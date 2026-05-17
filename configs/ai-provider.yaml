@@ -2,7 +2,7 @@
 defaultProvider: mock
 providers:
   claude:
-    enabled: false
+    enabled: true
     model: claude-opus-4-7
     timeoutMs: 60000
   codex:

@@ -38,6 +38,10 @@ export async function analyzePage(opts: AnalyzeOptions): Promise<PageAnalysis> {
   });
 
   try {
+    // Shim esbuild's __name helper in the browser context (tsx injects it via keepNames:true
+    // but it doesn't exist when Playwright serializes functions for page.evaluate).
+    await session.page.addInitScript(`if(typeof __name==='undefined'){window.__name=(fn,_)=>fn}`);
+
     const response = await session.page.goto(opts.url, { waitUntil: "domcontentloaded" });
     if (!response || !response.ok()) {
       throw new Error(`HTTP ${response?.status() ?? "?"} for ${opts.url}`);
@@ -48,13 +52,13 @@ export async function analyzePage(opts: AnalyzeOptions): Promise<PageAnalysis> {
     await session.page.screenshot({ path: opts.screenshotPath, fullPage: false });
 
     const raw = await session.page.evaluate(() => {
-      function visible(el: Element): boolean {
+      const visible = (el: Element): boolean => {
         const e = el as HTMLElement;
         if (!e.getClientRects().length) return false;
         const style = window.getComputedStyle(e);
         return style.visibility !== "hidden" && style.display !== "none";
-      }
-      function accName(el: Element): string {
+      };
+      const accName = (el: Element): string => {
         const e = el as HTMLElement;
         const aria = e.getAttribute("aria-label");
         if (aria) return aria.trim();
@@ -70,7 +74,7 @@ export async function analyzePage(opts: AnalyzeOptions): Promise<PageAnalysis> {
         const wrappingLabel = e.closest("label");
         if (wrappingLabel) return (wrappingLabel.textContent ?? "").trim();
         return (e.textContent ?? "").trim();
-      }
+      };
 
       const out: RawElement[] = [];
       const selectors =
