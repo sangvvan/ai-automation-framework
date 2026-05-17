@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Search — Fixture App</title>
+</head>
+<body>
+  <h1>Search</h1>
+  <form onsubmit="event.preventDefault(); run();">
+    <label for="q">Query</label>
+    <input id="q" name="q" type="search" />
+    <button type="submit">Search</button>
+  </form>
+  <ul id="results"></ul>
+  <script>
+    function run() {
+      const q = document.getElementById('q').value.trim();
+      const ul = document.getElementById('results');
+      ul.innerHTML = '';
+      const items = q ? ['Result A for ' + q, 'Result B for ' + q] : [];
+      items.forEach((t) => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+page_url: "http://127.0.0.1:4710/login.html"
+test_cases:
+  - id: TC_LOGIN_001
+    title: "Login with valid credentials"
+    priority: P1
+    type: positive
+    steps:
+      - Open login page
+      - Enter sang in username
+      - Enter password123 in password
+      - Click Login
+      - Verify Welcome back, Sang
+    expected_result: "Welcome back, Sang"
