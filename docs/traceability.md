@@ -14,8 +14,8 @@
 | REQ-006 | Reporting | 2 | implemented |
 | REQ-007 | Human Review & Approval | 4 | implemented |
 | REQ-008 | CLI, Config, Auth | 4 | implemented |
-| REQ-009 | Web Crawler & SiteMap | 4 | planned (SPRINT-004) |
-| REQ-010 | Authenticated Test Flows | 2 | planned (SPRINT-004) |
+| REQ-009 | Web Crawler & SiteMap | 4 | implemented (SPRINT-004) |
+| REQ-010 | Authenticated Test Flows | 2 | implemented (SPRINT-004) |
 | REQ-011 | ISTQB Test Plan & Suite | 3 | planned (SPRINT-005) |
 | REQ-012 | ISTQB Design Techniques | 2 | planned (SPRINT-005) |
 | REQ-013 | Non-Functional Quality Coverage | 4 | planned (SPRINT-005 / 006) |
