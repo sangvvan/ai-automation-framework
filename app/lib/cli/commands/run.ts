@@ -13,28 +13,41 @@ import { writeHtmlReport } from "../../reporter/html";
 import { buildProvider } from "../../ai/factory";
 import { designScenarios } from "../../ai/agents/test-design";
 import { persistRun } from "../../db/runs";
-import type { RunSummary } from "../../validation";
+import type {
+  RunSummary,
+  ScenarioResult,
+  ValidationResult,
+} from "../../validation";
 import type { CliCommand } from "../commands";
 import type { ExecutableScenario } from "../../validation";
+import { orchestrateSiteMap } from "../orchestrate-sitemap";
 
 export const runCommand: CliCommand = {
   help: {
     name: "run",
-    summary: "Execute a test run against a URL.",
+    summary: "Execute a test run against a URL or a SiteMap.",
     example:
-      'ai-test run --url https://example.com --test-case inputs/test-cases/login.yaml --mode testcase',
+      "ai-test run --url https://example.com --test-case inputs/test-cases/login.yaml --mode testcase\n" +
+      "  ai-test run --site-map reports/sitemaps/C-…json --mode explore",
     options: [
-      { flag: "--url", description: "Target page URL (required)" },
+      { flag: "--url", description: "Target page URL (single-page mode)" },
+      { flag: "--site-map", description: "Path to a SiteMap JSON (multi-page mode)" },
       { flag: "--test-case", description: "Path to YAML or MD test case file" },
       { flag: "--mode", description: "testcase | explore", default: "testcase" },
       { flag: "--output-dir", description: "Override reports root" },
       { flag: "--suite-tag", description: "Tag for regression-diff grouping" },
+      { flag: "--storage-state", description: "Override storage-state.json path" },
     ],
   },
   run: async (args) => {
     const url = flagString(args, "url");
-    if (!url) {
-      process.stderr.write("Missing --url\n");
+    const siteMapPath = flagString(args, "site-map");
+    if (!url && !siteMapPath) {
+      process.stderr.write("Provide --url or --site-map\n");
+      return 1;
+    }
+    if (url && siteMapPath) {
+      process.stderr.write("--url and --site-map are mutually exclusive\n");
       return 1;
     }
     const mode = (flagString(args, "mode") ?? "testcase") as "testcase" | "explore";
@@ -48,85 +61,105 @@ export const runCommand: CliCommand = {
     const evidenceDir = path.join(cfg.evidenceDir, runId);
     await mkdir(evidenceDir, { recursive: true });
 
-    // 1. Analyze the page (grounding for both modes)
-    const analysis = await analyzePage({
-      url,
-      viewport: cfg.runner.viewport,
-      screenshotPath: path.join(evidenceDir, "page.png"),
-      headless: cfg.runner.headless,
-      navigationTimeoutMs: cfg.runner.navigationTimeoutMs,
-    });
-
-    // 2. Build scenarios
     let scenarios: ExecutableScenario[] = [];
-    if (mode === "testcase") {
-      const tcFile = flagString(args, "test-case");
-      if (!tcFile) {
-        process.stderr.write("--test-case is required for --mode testcase\n");
+    let results: ScenarioResult[] = [];
+    let validations: ValidationResult[] = [];
+    let appLabel: string | undefined;
+
+    if (siteMapPath) {
+      if (mode === "testcase") {
+        process.stderr.write(
+          "--site-map currently supports --mode explore only (no per-page test-case mapping yet)\n",
+        );
         return 1;
       }
-      const parsed = await parseTestCaseFile(tcFile);
-      scenarios = parsed.map((s) => ({
-        ...s,
-        steps: mapStepsToActions(s.steps, analysis, s.pageUrl).steps,
-        warnings: mapStepsToActions(s.steps, analysis, s.pageUrl).warnings,
-      }));
-    } else {
-      const provider = buildProvider({
-        config: cfg,
-        role: "design",
-        tracePath: path.join(evidenceDir, "ai-trace.jsonl"),
+      const bundles = await orchestrateSiteMap({
+        siteMapPath,
+        cfg,
+        runId,
+        evidenceRoot: evidenceDir,
+        explore: true,
+        storageStatePath: flagString(args, "storage-state"),
       });
-      try {
-        scenarios = await designScenarios({
-          analysis,
-          provider,
-          maxScenarios: cfg.generation.maxScenarios,
-          categories: cfg.generation.categories,
-        });
-      } catch (err) {
-        // No provider configured/usable — fall back to a single
-        // "open page" scenario so the skeleton still produces output.
-        process.stderr.write(
-          `Warning: AI generation unavailable (${(err as Error).message}); emitting smoke-only scenario.\n`,
-        );
-        scenarios = [
-          {
-            id: `EXPLORE_${runId}_001`,
-            title: `Open ${url} and verify it loads`,
-            type: "navigation",
-            priority: "P2",
-            pageUrl: url,
-            origin: "ai-generated",
-            steps: [
-              {
-                index: 0,
-                description: `Open ${url}`,
-                action: { keyword: "open_page", url },
-                resolved: true,
-              },
-            ],
-            expectedResult: { text: analysis.title },
-            warnings: [],
-          },
-        ];
+      for (const b of bundles) {
+        scenarios.push(...b.scenarios);
+        results.push(...b.results);
+        validations.push(...b.validations);
       }
+      appLabel = `sitemap:${path.basename(siteMapPath)}`;
+    } else {
+      const analysis = await analyzePage({
+        url: url!,
+        viewport: cfg.runner.viewport,
+        screenshotPath: path.join(evidenceDir, "page.png"),
+        headless: cfg.runner.headless,
+        navigationTimeoutMs: cfg.runner.navigationTimeoutMs,
+      });
+
+      if (mode === "testcase") {
+        const tcFile = flagString(args, "test-case");
+        if (!tcFile) {
+          process.stderr.write("--test-case is required for --mode testcase\n");
+          return 1;
+        }
+        const parsed = await parseTestCaseFile(tcFile);
+        scenarios = parsed.map((s) => {
+          const mapped = mapStepsToActions(s.steps, analysis, s.pageUrl);
+          return { ...s, steps: mapped.steps, warnings: mapped.warnings };
+        });
+      } else {
+        const provider = buildProvider({
+          config: cfg,
+          role: "design",
+          tracePath: path.join(evidenceDir, "ai-trace.jsonl"),
+        });
+        try {
+          scenarios = await designScenarios({
+            analysis,
+            provider,
+            maxScenarios: cfg.generation.maxScenarios,
+            categories: cfg.generation.categories,
+          });
+        } catch (err) {
+          process.stderr.write(
+            `Warning: AI generation unavailable (${(err as Error).message}); emitting smoke-only scenario.\n`,
+          );
+          scenarios = [
+            {
+              id: `EXPLORE_${runId}_001`,
+              title: `Open ${url} and verify it loads`,
+              type: "navigation",
+              priority: "P2",
+              pageUrl: url!,
+              origin: "ai-generated",
+              steps: [
+                {
+                  index: 0,
+                  description: `Open ${url}`,
+                  action: { keyword: "open_page", url: url! },
+                  resolved: true,
+                },
+              ],
+              expectedResult: { text: analysis.title },
+              warnings: [],
+            },
+          ];
+        }
+      }
+
+      results = await runScenarios(scenarios, {
+        headless: cfg.runner.headless,
+        stepTimeoutMs: cfg.runner.stepTimeoutMs,
+        navigationTimeoutMs: cfg.runner.navigationTimeoutMs,
+        viewport: cfg.runner.viewport,
+        evidenceDir,
+        captureScreenshotOnSuccess: cfg.runner.captureScreenshotOnSuccess,
+      });
+      validations = results.map((r, i) =>
+        validateScenarioResult(r, scenarios[i].expectedResult),
+      );
+      appLabel = url;
     }
-
-    // 3. Run
-    const results = await runScenarios(scenarios, {
-      headless: cfg.runner.headless,
-      stepTimeoutMs: cfg.runner.stepTimeoutMs,
-      navigationTimeoutMs: cfg.runner.navigationTimeoutMs,
-      viewport: cfg.runner.viewport,
-      evidenceDir,
-      captureScreenshotOnSuccess: cfg.runner.captureScreenshotOnSuccess,
-    });
-
-    // 4. Validate
-    const validations = results.map((r, i) =>
-      validateScenarioResult(r, scenarios[i].expectedResult),
-    );
 
     const startedAt = results.length ? results[0].startedAt : new Date().toISOString();
     const finishedAt = results.length
@@ -143,7 +176,7 @@ export const runCommand: CliCommand = {
     const summary: RunSummary = {
       runId,
       mode,
-      app: url,
+      app: appLabel,
       suiteTag: flagString(args, "suite-tag"),
       startedAt,
       finishedAt,
@@ -156,7 +189,6 @@ export const runCommand: CliCommand = {
       environment: { node: process.version, platform: process.platform },
     };
 
-    // 5. Reports
     const jsonPath = await writeJsonReport(summary, {
       maskKeys: cfg.report.maskKeys,
       reportsDir: cfg.reportsDir,
@@ -172,14 +204,11 @@ export const runCommand: CliCommand = {
     process.stdout.write(`JSON report: ${jsonPath}\n`);
     process.stdout.write(`HTML report: ${htmlPath}\n`);
 
-    // Also write run-summary file to evidence for traceability
     await writeFile(
       path.join(evidenceDir, "run-summary.json"),
       JSON.stringify({ runId, jsonPath, htmlPath, totals }, null, 2),
     );
 
-    // Persist to DB if available (no-op otherwise). Lets the Review UI
-    // show generated scenarios as pending_review.
     await persistRun(summary, { jsonPath, htmlPath }).catch((err) => {
       process.stderr.write(
         `Note: DB persistence skipped (${(err as Error).message}).\n`,

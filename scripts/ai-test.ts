@@ -5,10 +5,14 @@ import { analyzeCommand } from "../app/lib/cli/commands/analyze";
 import { runCommand } from "../app/lib/cli/commands/run";
 import { reportCommand } from "../app/lib/cli/commands/report";
 import { configShowCommand } from "../app/lib/cli/commands/config";
+import { crawlCommand } from "../app/lib/cli/commands/crawl";
+import { authCommand } from "../app/lib/cli/commands/auth";
 
 const registry = {
   run: runCommand,
   analyze: analyzeCommand,
+  crawl: crawlCommand,
+  auth: authCommand,
   report: reportCommand,
   config: configShowCommand,
 };
