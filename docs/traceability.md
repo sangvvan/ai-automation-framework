@@ -1,6 +1,6 @@
 # Requirements Traceability Matrix
 
-> Updated after every phase. **Append-only**; never delete rows.
+> Append-only. Each phase updates the rows it owns.
 
 ## Overview
 
@@ -14,49 +14,56 @@
 | REQ-006 | Reporting | 2 | implemented |
 | REQ-007 | Human Review & Approval | 4 | implemented |
 | REQ-008 | CLI, Config, Auth | 4 | implemented |
+| REQ-009 | Web Crawler & SiteMap | 4 | planned (SPRINT-004) |
+| REQ-010 | Authenticated Test Flows | 2 | planned (SPRINT-004) |
+| REQ-011 | ISTQB Test Plan & Suite | 3 | planned (SPRINT-005) |
+| REQ-012 | ISTQB Design Techniques | 2 | planned (SPRINT-005) |
+| REQ-013 | Non-Functional Quality Coverage | 4 | planned (SPRINT-005 / 006) |
+| REQ-014 | Stability — SPA waits, self-heal, screenshots, assertions | 4 | planned (SPRINT-005 / 006) |
+| REQ-015 | CI/CD Interop — JUnit + PR comment | 2 | planned (SPRINT-005 / 006) |
+| REQ-016 | Advanced interactions + test data | 2 | planned (SPRINT-006) |
+| REQ-017 | Defects, coverage, cost guardrails | 3 | planned (SPRINT-006) |
 
-## Matrix
+## Matrix (delta — Sprints 4/5/6 only)
 
 | REQ | US | TASK | Sprint | Status |
 |-----|-----|------|--------|--------|
-| REQ-008 | US-001 | TASK-001 | SPRINT-001 | done |
-| REQ-008 | US-002 | TASK-002, TASK-003 | SPRINT-001 | done |
-| REQ-001 | US-003 | TASK-004, TASK-005, TASK-006 | SPRINT-001 | done |
-| REQ-002 | US-004 | TASK-007 | SPRINT-001 | done |
-| REQ-004 | US-005 | TASK-008, TASK-009 | SPRINT-001 | done |
-| REQ-005 | US-006 | TASK-010 | SPRINT-001 | done |
-| REQ-006 | US-007 | TASK-011 | SPRINT-001 | done |
-| REQ-006 | US-008 | TASK-012, TASK-023 | SPRINT-001 / 003 | done |
-| REQ-008 | US-015 | TASK-013, TASK-014, TASK-022 | SPRINT-001 / 002 | done |
-| REQ-003 | US-009 | TASK-020, TASK-021 | SPRINT-002 | done |
-| REQ-008 | US-010 | TASK-015, TASK-017 | SPRINT-002 | done |
-| REQ-007 | US-011 | TASK-016, TASK-018 | SPRINT-002 | done |
-| REQ-007 | US-012 | TASK-019 | SPRINT-002 | done |
-| REQ-007 | US-013 | TASK-019 | SPRINT-002 | done |
-| REQ-007 | US-014 | TASK-019 | SPRINT-002 | done |
-| —       | —      | TASK-024 (Docker) | SPRINT-003 | done |
-| —       | —      | TASK-025 (CI)     | SPRINT-003 | done |
-| —       | —      | TASK-026 (docs)   | SPRINT-003 | done |
+| REQ-009 | US-016 | TASK-027, TASK-028, TASK-029, TASK-030 | SPRINT-004 | planned |
+| REQ-009 | US-017 | TASK-028 | SPRINT-004 | planned |
+| REQ-009 | US-020 | TASK-035, TASK-064 | SPRINT-004 | planned |
+| REQ-009 | US-021 | TASK-030, TASK-034 | SPRINT-004 | planned |
+| REQ-010 | US-018 | TASK-031, TASK-032, TASK-034 | SPRINT-004 | planned |
+| REQ-010 | US-019 | TASK-031, TASK-033, TASK-034, TASK-064 | SPRINT-004 | planned |
+| REQ-011 | US-022 | TASK-036, TASK-037, TASK-038 | SPRINT-005 | planned |
+| REQ-011 | US-023 | TASK-038, TASK-039, TASK-040 | SPRINT-005 | planned |
+| REQ-011 | US-031 | TASK-048 | SPRINT-005 | planned |
+| REQ-012 | US-024 | TASK-041 | SPRINT-005 | planned |
+| REQ-012 | US-025 | TASK-042 | SPRINT-005 | planned |
+| REQ-013 | US-026 | TASK-043, TASK-061 | SPRINT-005 | planned |
+| REQ-013 | US-027 | TASK-044 | SPRINT-005 | planned |
+| REQ-013 | US-032 | TASK-049 | SPRINT-006 | planned |
+| REQ-013 | US-040 | TASK-059 | SPRINT-006 | planned |
+| REQ-014 | US-029 | TASK-046 | SPRINT-005 | planned |
+| REQ-014 | US-030 | TASK-047 | SPRINT-005 | planned |
+| REQ-014 | US-033 | TASK-050 | SPRINT-006 | planned |
+| REQ-014 | US-034 | TASK-051, TASK-052 | SPRINT-006 | planned |
+| REQ-015 | US-028 | TASK-045, TASK-063 | SPRINT-005 / 006 | planned |
+| REQ-015 | US-036 | TASK-055, TASK-063 | SPRINT-006 | planned |
+| REQ-016 | US-038 | TASK-057 | SPRINT-006 | planned |
+| REQ-016 | US-039 | TASK-058 | SPRINT-006 | planned |
+| REQ-017 | US-035 | TASK-053, TASK-054 | SPRINT-006 | planned |
+| REQ-017 | US-037 | TASK-056 | SPRINT-006 | planned |
+| REQ-017 | US-041 | TASK-060 | SPRINT-006 | planned |
 
 ## ADRs
-- ADR-001 — Runtime, orchestration, and project topology (accepted)
-- ADR-002 — Canonical Zod schemas (accepted)
-- ADR-003 — AI provider abstraction (accepted)
-- ADR-004 — PostgreSQL schema (accepted)
-- ADR-005 — Locator strategy + keyword actions (accepted)
+- ADR-001..ADR-005 — accepted (PS-001 set)
+- ADR-006 — Crawler topology, politeness, route-pattern dedupe
+- ADR-007 — Auth recipe DSL + storageState lifecycle
+- ADR-008 — TestPlan + TestSuite schemas
+- ADR-009 — Non-functional validators (axe / vitals / security headers)
+- ADR-010 — Self-healing locator strategy
+- ADR-011 — Screenshot baseline storage and diffing
 
-## Test gates (last green)
-- Vitest: **41 passed / 12 files**
-- TypeScript: **clean** (`tsc --noEmit`)
-- ESLint: **clean**
-- Playwright smoke: deferred to CI (Playwright browser install blocked
-  from the agent's network policy; locally run via the `e2e` CI job or
-  the fixture-app instructions in `docs/user-guide.md`).
-
-## Known follow-ups (post-MVP backlog)
-- TASK-023 polish — surface the regression-diff in the web UI run page,
-  not only in the HTML report.
-- Multi-page user-journey generation (REQ-003 extension).
-- Self-healing locators (REQ-004 extension).
-- Visual baseline manager (REQ-006 extension).
-- SSO / OAuth (REQ-008 extension).
+## Sprint 1-3 retained from PS-001 traceability (unchanged)
+See git history or this file's prior versions on `main`. Rows for
+REQ-001..REQ-008 / US-001..US-015 / TASK-001..TASK-026 remain valid.
