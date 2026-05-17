@@ -66,7 +66,60 @@ export const runsRepo = {
       [runId, scenarioId],
     );
   },
+  /** Most recent run with the same suite tag that started before `current`. */
+  async findPreviousBySuiteTag(
+    current: RunRow,
+  ): Promise<RunRow | null> {
+    if (!current.suite_tag) return null;
+    return db.queryOne<RunRow>(
+      `SELECT id, mode, app_url, started_at, finished_at, totals,
+              json_report, html_report, suite_tag
+         FROM runs
+         WHERE suite_tag = $1 AND started_at < $2
+         ORDER BY started_at DESC LIMIT 1`,
+      [current.suite_tag, current.started_at],
+    );
+  },
 };
+
+/**
+ * Bare scenario id (without the run-id prefix used as the DB primary key).
+ * Scenarios are stored as `${runId}::${scenarioId}` so that the same
+ * generated id can recur across runs without colliding on PRIMARY KEY.
+ */
+export function bareScenarioId(row: ScenarioRow): string {
+  const sep = "::";
+  const idx = row.id.indexOf(sep);
+  return idx >= 0 ? row.id.slice(idx + sep.length) : row.id;
+}
+
+export interface RegressionDiff {
+  newFailures: { id: string; title: string }[];
+  newlyPassing: { id: string; title: string }[];
+  carriedFailures: { id: string; title: string }[];
+}
+
+export function computeRegressionDiff(
+  current: ScenarioRow[],
+  previous: ScenarioRow[],
+): RegressionDiff {
+  const prev = new Map(previous.map((s) => [bareScenarioId(s), s]));
+  const newFailures: RegressionDiff["newFailures"] = [];
+  const newlyPassing: RegressionDiff["newlyPassing"] = [];
+  const carriedFailures: RegressionDiff["carriedFailures"] = [];
+  for (const s of current) {
+    const base = bareScenarioId(s);
+    const prior = prev.get(base);
+    if (s.result_status === "failed" && prior?.result_status !== "failed") {
+      newFailures.push({ id: base, title: s.title });
+    } else if (s.result_status === "passed" && prior?.result_status === "failed") {
+      newlyPassing.push({ id: base, title: s.title });
+    } else if (s.result_status === "failed" && prior?.result_status === "failed") {
+      carriedFailures.push({ id: base, title: s.title });
+    }
+  }
+  return { newFailures, newlyPassing, carriedFailures };
+}
 
 /** Persist a fresh RunSummary + its scenarios in one transaction. */
 export async function persistRun(

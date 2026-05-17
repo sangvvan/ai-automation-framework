@@ -8,11 +8,17 @@ providers:
   codex:
     enabled: false
     model: gpt-4.1-mini
+    baseUrl: https://api.openai.com/v1
     timeoutMs: 60000
   opencode:
     enabled: false
     baseUrl: http://localhost:1234/v1
     model: google/gemma-4-26b-a4b
+    timeoutMs: 120000
+  opencode-ollama:
+    enabled: false
+    baseUrl: http://localhost:11434/v1
+    model: llama3.1
     timeoutMs: 120000
   mock:
     enabled: true

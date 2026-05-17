@@ -1,5 +1,7 @@
 import type { FrameworkConfig } from "../config";
 import { ClaudeProvider } from "./providers/claude";
+import { CodexProvider } from "./providers/codex";
+import { OpencodeProvider } from "./providers/opencode";
 import { MockProvider } from "./providers/mock";
 import type { AiProvider } from "./provider";
 import { makeChainedProvider } from "./resolve";
@@ -18,6 +20,7 @@ export function buildProvider(opts: BuildProviderOptions): AiProvider {
   const chain: AiProvider[] = [];
   for (const name of chainNames) {
     const spec = cfg.providers?.[name];
+    // mock is always available; other providers must be enabled in YAML.
     if (!spec?.enabled && name !== "mock") continue;
     switch (name) {
       case "claude":
@@ -25,11 +28,27 @@ export function buildProvider(opts: BuildProviderOptions): AiProvider {
           new ClaudeProvider({ model: spec?.model, timeoutMs: spec?.timeoutMs }),
         );
         break;
+      case "codex":
+        chain.push(
+          new CodexProvider({
+            model: spec?.model,
+            timeoutMs: spec?.timeoutMs,
+            baseUrl: spec?.baseUrl,
+          }),
+        );
+        break;
+      case "opencode":
+      case "opencode-ollama":
+        chain.push(
+          new OpencodeProvider({
+            baseUrl: spec?.baseUrl,
+            model: spec?.model,
+            timeoutMs: spec?.timeoutMs,
+          }),
+        );
+        break;
       case "mock":
         chain.push(new MockProvider());
-        break;
-      default:
-        // Other providers (codex/opencode) are stubs in MVP; skip silently.
         break;
     }
   }

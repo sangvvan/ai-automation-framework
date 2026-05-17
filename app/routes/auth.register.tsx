@@ -32,10 +32,15 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
   const hash = await hashPassword(parsed.data.password);
+  // First registered user is bootstrapped as test-lead so the review +
+  // promotion flow has at least one privileged actor. Subsequent users
+  // default to "tester" (see usersRepo.create).
+  const existingCount = await usersRepo.count().catch(() => 0);
   const user = await usersRepo.create({
     email: parsed.data.email,
     name: parsed.data.name,
     passwordHash: hash,
+    role: existingCount === 0 ? "test-lead" : undefined,
   });
   const session = await sessionsRepo.create(user.id);
   const cookie = await writeSessionId(session.id);

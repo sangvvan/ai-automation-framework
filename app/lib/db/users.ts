@@ -24,6 +24,19 @@ export const usersRepo = {
       [id],
     );
   },
+  async count(): Promise<number> {
+    const row = await db.queryOne<{ n: string }>("SELECT count(*)::text AS n FROM users");
+    return Number(row?.n ?? "0");
+  },
+  async listAll(): Promise<UserRow[]> {
+    return db.query<UserRow>(
+      `SELECT id, email, password_hash, name, role, created_at
+         FROM users ORDER BY created_at ASC`,
+    );
+  },
+  async setRole(id: string, role: UserRole): Promise<void> {
+    await db.execute("UPDATE users SET role = $1 WHERE id = $2", [role, id]);
+  },
   async create(input: {
     email: string;
     passwordHash: string;

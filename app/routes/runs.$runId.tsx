@@ -1,7 +1,7 @@
 import { json, type LoaderFunctionArgs, type MetaFunction } from "@remix-run/node";
 import { Form, Link, useLoaderData, useSearchParams } from "@remix-run/react";
 import { requireUser } from "~/lib/auth/require-user";
-import { runsRepo } from "~/lib/db/runs";
+import { runsRepo, computeRegressionDiff, type RegressionDiff } from "~/lib/db/runs";
 import { StatusPill } from "~/components/runs/StatusPill";
 
 export const meta: MetaFunction = ({ params }) => [
@@ -17,15 +17,29 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     throw new Response("Run not found", { status: 404 });
   }
   const scenarios = await runsRepo.listScenarios(runId);
+
+  let diff: (RegressionDiff & { previousRunId: string }) | null = null;
+  if (run.suite_tag) {
+    const previous = await runsRepo.findPreviousBySuiteTag(run);
+    if (previous) {
+      const prevScenarios = await runsRepo.listScenarios(previous.id);
+      const d = computeRegressionDiff(scenarios, prevScenarios);
+      if (d.newFailures.length || d.newlyPassing.length || d.carriedFailures.length) {
+        diff = { ...d, previousRunId: previous.id };
+      }
+    }
+  }
+
   return json({
     user: { name: user.name, role: user.role },
     run,
     scenarios,
+    diff,
   });
 }
 
 export default function RunDetail() {
-  const { user, run, scenarios } = useLoaderData<typeof loader>();
+  const { user, run, scenarios, diff } = useLoaderData<typeof loader>();
   const [params, setParams] = useSearchParams();
   const filter = params.get("filter") ?? "all";
   const filtered = scenarios.filter((s) => {
@@ -47,6 +61,53 @@ export default function RunDetail() {
           {run.mode} · {run.app_url ?? "—"} · {run.started_at}
         </p>
       </header>
+
+      {diff ? (
+        <section
+          role="region"
+          aria-label="Regression diff"
+          className="mx-6 mt-6 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 rounded-xl p-4"
+        >
+          <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+            Regression diff vs{" "}
+            <Link className="underline" to={`/runs/${diff.previousRunId}`}>
+              {diff.previousRunId}
+            </Link>
+          </h2>
+          <p className="text-sm text-amber-900 dark:text-amber-200 mt-1">
+            +{diff.newFailures.length} new failures · +{diff.newlyPassing.length} newly
+            passing · {diff.carriedFailures.length} carried failures
+          </p>
+          {diff.newFailures.length ? (
+            <details className="mt-2" open>
+              <summary className="cursor-pointer text-sm">
+                New failures ({diff.newFailures.length})
+              </summary>
+              <ul className="mt-1 text-sm list-disc pl-5">
+                {diff.newFailures.map((s) => (
+                  <li key={s.id}>
+                    <code>{s.id}</code> — {s.title}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+          {diff.newlyPassing.length ? (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-sm">
+                Newly passing ({diff.newlyPassing.length})
+              </summary>
+              <ul className="mt-1 text-sm list-disc pl-5">
+                {diff.newlyPassing.map((s) => (
+                  <li key={s.id}>
+                    <code>{s.id}</code> — {s.title}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="grid grid-cols-4 gap-3 p-6">
         {[

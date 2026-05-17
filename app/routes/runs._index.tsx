@@ -26,9 +26,16 @@ export default function RunsIndex() {
             Signed in as {user.name} ({user.role})
           </p>
         </div>
-        <Form method="post" action="/auth/logout">
-          <button className="text-sm text-slate-500 hover:underline">Sign out</button>
-        </Form>
+        <div className="flex items-center gap-4">
+          {user.role === "test-lead" ? (
+            <a className="text-sm text-indigo-600 hover:underline" href="/admin/users">
+              User admin
+            </a>
+          ) : null}
+          <Form method="post" action="/auth/logout">
+            <button className="text-sm text-slate-500 hover:underline">Sign out</button>
+          </Form>
+        </div>
       </header>
 
       <section className="p-6">
