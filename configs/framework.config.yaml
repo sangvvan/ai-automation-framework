@@ -1,0 +1,33 @@
+# Framework-wide defaults. Override per environment via test-env.yaml
+# or AI_TEST_* env vars (see app/lib/config.ts).
+baseUrl: "http://localhost:3000"
+reportsDir: "reports"
+testsApprovedDir: "tests/approved"
+testsRegressionDir: "tests/regression"
+testsGeneratedDir: "tests/generated"
+evidenceDir: "reports/evidence"
+runner:
+  workers: 1
+  headless: true
+  viewport:
+    width: 1280
+    height: 800
+  stepTimeoutMs: 10000
+  navigationTimeoutMs: 30000
+  captureScreenshotOnSuccess: false
+generation:
+  maxScenarios: 25
+  categories:
+    - positive
+    - negative
+    - required-field
+    - boundary
+    - navigation
+report:
+  screenshotDiffThreshold: 0.001
+  maskKeys:
+    - password
+    - token
+    - secret
+    - ssn
+    - card_number
