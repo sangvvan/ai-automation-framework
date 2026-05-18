@@ -12,7 +12,16 @@ export const Action = z.discriminatedUnion("keyword", [
     text: z.string().min(1),
   }),
   z.object({ keyword: z.literal("verify_url"), pattern: z.string().min(1) }),
-  z.object({ keyword: z.literal("wait_for"), target: Locator }),
+  z.object({
+    keyword: z.literal("wait_for"),
+    target: Locator.optional(),
+    /** Wait strategy added in REQ-014. */
+    strategy: z
+      .enum(["visible", "network-idle", "mutation-stable", "route-change"])
+      .optional(),
+    /** For mutation-stable: how long DOM must be quiet (ms). */
+    quietMs: z.number().int().positive().optional(),
+  }),
 ]);
 export type Action = z.infer<typeof Action>;
 
@@ -24,13 +33,42 @@ export const ScenarioStep = z.object({
 });
 export type ScenarioStep = z.infer<typeof ScenarioStep>;
 
+/**
+ * Extended assertion vocabulary (REQ-014). Each field is independent;
+ * the validator dispatches one ValidationCheck per supplied field.
+ */
+export const AttributeAssertion = z.object({
+  target: Locator,
+  name: z.string().min(1),
+  equals: z.string().optional(),
+  contains: z.string().optional(),
+});
+export type AttributeAssertion = z.infer<typeof AttributeAssertion>;
+
+export const ChildCountAssertion = z.object({
+  target: Locator,
+  min: z.number().int().nonnegative().optional(),
+  max: z.number().int().nonnegative().optional(),
+});
+export type ChildCountAssertion = z.infer<typeof ChildCountAssertion>;
+
 export const ExpectedResult = z.object({
   url: z.string().optional(),
   text: z.string().optional(),
   visibleLocator: Locator.optional(),
+  urlNotContains: z.string().optional(),
+  textNotContains: z.string().optional(),
+  visibleLocators: z.array(Locator).optional(),
+  notVisibleLocators: z.array(Locator).optional(),
+  attribute: AttributeAssertion.optional(),
+  childCount: ChildCountAssertion.optional(),
 });
 export type ExpectedResult = z.infer<typeof ExpectedResult>;
 
+/**
+ * Test TYPE — what aspect of the application is being verified (ISO/IEC
+ * 25010 alignment). Orthogonal to design technique.
+ */
 export const ScenarioType = z.enum([
   "positive",
   "negative",
@@ -41,8 +79,28 @@ export const ScenarioType = z.enum([
   "error-handling",
   "accessibility",
   "security",
+  "performance",
+  "compatibility",
+  "usability",
+  "i18n",
 ]);
 export type ScenarioType = z.infer<typeof ScenarioType>;
+
+/**
+ * ISTQB-CTFL design technique (REQ-012). Tagged on every scenario so
+ * coverage by technique is reportable.
+ */
+export const DesignTechnique = z.enum([
+  "equivalence-partition",
+  "boundary-value",
+  "decision-table",
+  "state-transition",
+  "use-case",
+  "pairwise",
+  "error-guessing",
+  "exploratory-charter",
+]);
+export type DesignTechnique = z.infer<typeof DesignTechnique>;
 
 export const Priority = z.enum(["P1", "P2", "P3"]);
 export type Priority = z.infer<typeof Priority>;
@@ -71,5 +129,9 @@ export const ExecutableScenario = z.object({
   expectedResult: ExpectedResult,
   origin: ScenarioOrigin,
   warnings: z.array(ScenarioWarning).default([]),
+  /** ISTQB technique that produced this scenario (REQ-012). */
+  designTechnique: DesignTechnique.optional(),
+  /** Optional Test Suite the scenario belongs to (REQ-011). */
+  suiteId: z.string().uuid().optional(),
 });
 export type ExecutableScenario = z.infer<typeof ExecutableScenario>;

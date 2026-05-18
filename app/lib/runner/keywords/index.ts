@@ -23,7 +23,11 @@ export async function executeAction(ctx: RunnerContext, action: Action): Promise
     case "verify_url":
       return verify_url(ctx, { pattern: action.pattern });
     case "wait_for":
-      return wait_for(ctx, { target: action.target });
+      return wait_for(ctx, {
+        target: action.target,
+        strategy: action.strategy,
+        quietMs: action.quietMs,
+      });
   }
 }
 

@@ -9,10 +9,13 @@ import {
   ExpectedResult,
   Action,
   Locator,
+  DesignTechnique,
+  type DesignTechnique as DesignTechniqueType,
   type PageAnalysis,
   type PageElement,
 } from "../../validation";
 import type { AiProvider } from "../provider";
+import { ALL_TECHNIQUES, TECHNIQUE_ADDENDA } from "../prompts/techniques";
 
 export interface DesignOptions {
   analysis: PageAnalysis;
@@ -20,6 +23,8 @@ export interface DesignOptions {
   businessRules?: string[];
   maxScenarios?: number;
   categories?: string[];
+  /** Restrict generation to a subset of ISTQB techniques (REQ-012). */
+  requestedTechniques?: DesignTechniqueType[];
   provider: AiProvider;
 }
 
@@ -29,6 +34,7 @@ const GeneratedScenarioModel = z.object({
   title: z.string().min(1),
   type: ScenarioType,
   priority: Priority,
+  designTechnique: DesignTechnique.optional(),
   steps: z
     .array(
       z.object({
@@ -65,40 +71,63 @@ export async function designScenarios(
   opts: DesignOptions,
 ): Promise<ExecutableScenarioType[]> {
   const max = opts.maxScenarios ?? 25;
-  const userPrompt = buildUserPrompt(opts);
-  const result = await opts.provider.generateStructured({
-    systemPrompt: SYSTEM,
-    userPrompt,
-    schema: ModelOutput,
-  });
+  const requested =
+    opts.requestedTechniques && opts.requestedTechniques.length
+      ? opts.requestedTechniques
+      : ALL_TECHNIQUES;
 
   const validNames = new Set(opts.analysis.elements.map((e) => normalize(e.accessibleName)));
   const out: ExecutableScenarioType[] = [];
 
-  for (const raw of result.scenarios.slice(0, max)) {
-    const steps: import("../../validation").ScenarioStep[] = raw.steps.map((s, i) => {
-      const step: import("../../validation").ScenarioStep = {
-        index: i,
-        description: s.description,
-        action: groundAction(s.action, opts.analysis) ?? s.action,
-        resolved: isResolved(s.action, opts.analysis, validNames),
+  // Per-technique cap so each technique gets a fair share of the budget.
+  const perTechniqueCap = Math.max(
+    1,
+    Math.floor(max / requested.length) + (max % requested.length ? 1 : 0),
+  );
+
+  for (const technique of requested) {
+    if (out.length >= max) break;
+    const systemPrompt = `${SYSTEM}\n${TECHNIQUE_ADDENDA[technique]}`;
+    const userPrompt = buildUserPrompt({ ...opts, maxScenarios: perTechniqueCap });
+    let result: { scenarios: Array<z.infer<typeof GeneratedScenarioModel>> };
+    try {
+      result = await opts.provider.generateStructured({
+        systemPrompt,
+        userPrompt,
+        schema: ModelOutput,
+      });
+    } catch {
+      // Skip techniques the provider can't satisfy; keep going.
+      continue;
+    }
+
+    for (const raw of result.scenarios) {
+      if (out.length >= max) break;
+      const steps: import("../../validation").ScenarioStep[] = raw.steps.map((s, i) => {
+        const step: import("../../validation").ScenarioStep = {
+          index: i,
+          description: s.description,
+          action: groundAction(s.action, opts.analysis) ?? s.action,
+          resolved: isResolved(s.action, opts.analysis, validNames),
+        };
+        return ScenarioStep.parse(step);
+      });
+      const scenario: ExecutableScenarioType = {
+        id: raw.id || `GEN_${technique}_${randomUUID().slice(0, 8)}`,
+        title: raw.title,
+        type: raw.type,
+        priority: raw.priority,
+        pageUrl: opts.analysis.url,
+        steps,
+        expectedResult: raw.expectedResult,
+        origin: "ai-generated",
+        designTechnique: technique,
+        warnings: steps
+          .filter((s) => !s.resolved)
+          .map((s) => ({ stepIndex: s.index, reason: "AI step referenced unknown element" })),
       };
-      return ScenarioStep.parse(step);
-    });
-    const scenario: ExecutableScenarioType = {
-      id: raw.id || `GEN_${randomUUID().slice(0, 8)}`,
-      title: raw.title,
-      type: raw.type,
-      priority: raw.priority,
-      pageUrl: opts.analysis.url,
-      steps,
-      expectedResult: raw.expectedResult,
-      origin: "ai-generated",
-      warnings: steps
-        .filter((s) => !s.resolved)
-        .map((s) => ({ stepIndex: s.index, reason: "AI step referenced unknown element" })),
-    };
-    out.push(ExecutableScenario.parse(scenario));
+      out.push(ExecutableScenario.parse(scenario));
+    }
   }
   return out;
 }
@@ -143,7 +172,7 @@ function groundAction(action: Action, analysis: PageAnalysis): Action | undefine
   const target = "target" in action ? action.target : undefined;
   if (!target) return action;
   const match = findElementByLocator(analysis.elements, target);
-  if (!match) return action; // leave as-is (will be flagged unresolved)
+  if (!match) return action;
   return { ...action, target: match.locator } as Action;
 }
 
@@ -162,7 +191,6 @@ function isResolved(
   const target = "target" in action ? action.target : undefined;
   if (!target) return true;
   if (findElementByLocator(analysis.elements, target)) return true;
-  // also accept role/label/text whose name appears as an element accessibleName
   const candidate = locatorText(target);
   return candidate ? validNames.has(normalize(candidate)) : false;
 }

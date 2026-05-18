@@ -10,6 +10,9 @@ import { runScenarios } from "../../runner/runner";
 import { validateScenarioResult } from "../../validator/validate";
 import { writeJsonReport } from "../../reporter/json";
 import { writeHtmlReport } from "../../reporter/html";
+import { writeJunitReport } from "../../reporter/junit";
+import { generateAndWriteTestPlan } from "../../reporter/test-plan-generator";
+import { assembleSuites } from "../../review/suite-assembler";
 import { buildProvider } from "../../ai/factory";
 import { designScenarios } from "../../ai/agents/test-design";
 import { persistRun } from "../../db/runs";
@@ -37,6 +40,15 @@ export const runCommand: CliCommand = {
       { flag: "--output-dir", description: "Override reports root" },
       { flag: "--suite-tag", description: "Tag for regression-diff grouping" },
       { flag: "--storage-state", description: "Override storage-state.json path" },
+      {
+        flag: "--test-level",
+        description: "unit | component | integration | system | acceptance",
+        default: "system",
+      },
+      {
+        flag: "--techniques",
+        description: "Comma-separated ISTQB design techniques to drive AI generation",
+      },
     ],
   },
   run: async (args) => {
@@ -113,12 +125,18 @@ export const runCommand: CliCommand = {
           role: "design",
           tracePath: path.join(evidenceDir, "ai-trace.jsonl"),
         });
+        const techniquesArg = flagString(args, "techniques");
+        const requestedTechniques = techniquesArg
+          ? (techniquesArg.split(",").map((s) => s.trim()).filter(Boolean) as
+              import("../../validation").DesignTechnique[])
+          : undefined;
         try {
           scenarios = await designScenarios({
             analysis,
             provider,
             maxScenarios: cfg.generation.maxScenarios,
             categories: cfg.generation.categories,
+            requestedTechniques,
           });
         } catch (err) {
           process.stderr.write(
@@ -173,11 +191,44 @@ export const runCommand: CliCommand = {
       skipped: results.filter((r) => r.status === "skipped").length,
     };
 
+    // Assemble suites (one per page; ad-hoc fallback). Used for JUnit
+    // grouping and persisted by the DB layer later if available.
+    const assembled = assembleSuites(scenarios);
+    const suiteOf = new Map<string, string>(); // scenarioId → suite display name
+    const suiteGrouping: { names: Record<string, string>; members: Record<string, string[]> } = {
+      names: {},
+      members: {},
+    };
+    for (const s of assembled) {
+      suiteGrouping.names[s.tempId] = s.name;
+      suiteGrouping.members[s.tempId] = s.scenarios.map((sc) => sc.id);
+      for (const sc of s.scenarios) suiteOf.set(sc.id, s.name);
+    }
+
+    // Roll-up by ISTQB design technique (REQ-012 §coverage panel).
+    const techniqueRoll = new Map<string, { total: number; passed: number }>();
+    for (let i = 0; i < scenarios.length; i++) {
+      const technique = scenarios[i].designTechnique ?? "error-guessing";
+      const r = techniqueRoll.get(technique) ?? { total: 0, passed: 0 };
+      r.total++;
+      if (validations[i].status === "passed") r.passed++;
+      techniqueRoll.set(technique, r);
+    }
+    const techniqueCoverage = [...techniqueRoll.entries()].map(([technique, v]) => ({
+      technique,
+      total: v.total,
+      passed: v.passed,
+    }));
+
+    const testLevel = (flagString(args, "test-level") ?? "system") as
+      | "unit" | "component" | "integration" | "system" | "acceptance";
+
     const summary: RunSummary = {
       runId,
       mode,
       app: appLabel,
       suiteTag: flagString(args, "suite-tag"),
+      testLevel,
       startedAt,
       finishedAt,
       totals,
@@ -187,7 +238,22 @@ export const runCommand: CliCommand = {
         validation: validations[i],
       })),
       environment: { node: process.version, platform: process.platform },
+      techniqueCoverage,
     };
+    void suiteOf;
+
+    // Test Plan (ISTQB) — deterministic, persisted alongside reports.
+    let testPlanPath: string | undefined;
+    try {
+      testPlanPath = await generateAndWriteTestPlan({
+        summary,
+        cfg,
+        reportsDir: cfg.reportsDir,
+      });
+      summary.testPlanPath = testPlanPath;
+    } catch (err) {
+      process.stderr.write(`Note: TestPlan generation failed (${(err as Error).message}).\n`);
+    }
 
     const jsonPath = await writeJsonReport(summary, {
       maskKeys: cfg.report.maskKeys,
@@ -197,12 +263,18 @@ export const runCommand: CliCommand = {
       maskKeys: cfg.report.maskKeys,
       reportsDir: cfg.reportsDir,
     });
+    const junitPath = await writeJunitReport(summary, {
+      reportsDir: cfg.reportsDir,
+      suites: suiteGrouping,
+    });
 
     process.stdout.write(
       `\n✓ Run ${runId} finished — total=${totals.total} passed=${totals.passed} failed=${totals.failed} skipped=${totals.skipped}\n`,
     );
-    process.stdout.write(`JSON report: ${jsonPath}\n`);
-    process.stdout.write(`HTML report: ${htmlPath}\n`);
+    process.stdout.write(`JSON report:  ${jsonPath}\n`);
+    process.stdout.write(`HTML report:  ${htmlPath}\n`);
+    process.stdout.write(`JUnit XML:    ${junitPath}\n`);
+    if (testPlanPath) process.stdout.write(`Test Plan:    ${testPlanPath}\n`);
 
     await writeFile(
       path.join(evidenceDir, "run-summary.json"),
