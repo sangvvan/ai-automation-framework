@@ -1,0 +1,62 @@
+{
+  "crawlId": "C-20260518133305-2922",
+  "entryUrl": "http://127.0.0.1:47758/",
+  "startedAt": "2026-05-18T13:33:05.280Z",
+  "finishedAt": "2026-05-18T13:33:05.490Z",
+  "exitReason": "done",
+  "totals": {
+    "fetched": 3,
+    "skipped": 0,
+    "unique": 3
+  },
+  "pages": [
+    {
+      "url": "http://127.0.0.1:47758/",
+      "normalizedUrl": "http://127.0.0.1:47758/",
+      "sampleUrl": "http://127.0.0.1:47758/",
+      "title": "Fixture App — Home",
+      "status": 200,
+      "depth": 0,
+      "capturedAt": "2026-05-18T13:33:05.391Z",
+      "occurrences": 1
+    },
+    {
+      "url": "http://127.0.0.1:47758/login.html",
+      "normalizedUrl": "http://127.0.0.1:47758/login.html",
+      "sampleUrl": "http://127.0.0.1:47758/login.html",
+      "title": "Login — Fixture App",
+      "status": 200,
+      "depth": 1,
+      "capturedAt": "2026-05-18T13:33:05.414Z",
+      "occurrences": 1
+    },
+    {
+      "url": "http://127.0.0.1:47758/search.html",
+      "normalizedUrl": "http://127.0.0.1:47758/search.html",
+      "sampleUrl": "http://127.0.0.1:47758/search.html",
+      "title": "Search — Fixture App",
+      "status": 200,
+      "depth": 1,
+      "capturedAt": "2026-05-18T13:33:05.429Z",
+      "occurrences": 1
+    }
+  ],
+  "skipped": [],
+  "config": {
+    "maxPages": 10,
+    "maxDepth": 2,
+    "maxConcurrency": 2,
+    "perHostQps": 10,
+    "includeSubdomains": false,
+    "ignoreRobots": false,
+    "ignoreParams": [
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "gclid",
+      "fbclid"
+    ],
+    "routePatterns": [],
+    "timeoutMs": 0
+  }
+}
