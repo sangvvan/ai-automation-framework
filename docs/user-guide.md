@@ -136,7 +136,68 @@ All four must be green before merge.
 
 ---
 
-## 7. Troubleshooting
+## 7. Universal-web pipeline (SPRINT-004)
+
+Test an entire app from one URL, including protected pages:
+
+```bash
+# 1. Discover pages (polite, robots-aware)
+npm run ai-test -- crawl --url https://app.example.com \
+  --max-pages 25 --max-depth 3 --per-host-qps 2
+
+# 2. (Optional) protected app — capture a session
+SITE_USERNAME=ada@example.com SITE_PASSWORD=Pa55! \
+  npm run ai-test -- auth detect --url https://app.example.com/login
+# review inputs/auth/app-example-com.draft.yaml, then:
+npm run ai-test -- auth login --recipe inputs/auth/app-example-com.draft.yaml
+
+# 3. Multi-page run from the SiteMap
+npm run ai-test -- run --site-map reports/sitemaps/C-...json --mode explore
+```
+
+Outputs: `reports/sitemaps/{crawl-id}.json` + per-page evidence under
+`reports/evidence/{run-id}/<page-hash>/`.
+
+## 8. ISTQB-aligned reports (SPRINT-005)
+
+Every run now emits, in addition to HTML + JSON:
+
+| Artefact | Path |
+|---|---|
+| **Test Plan** (ISTQB-CTFL shape) | `reports/test-plans/{run-id}.json` |
+| **JUnit XML** (Jenkins/GitLab/Azure) | `reports/junit/{run-id}.xml` |
+
+New CLI flags:
+
+```bash
+# Tag the test level on the report
+npm run ai-test -- run --url … --test-level acceptance --mode explore
+
+# Drive AI generation by specific ISTQB design techniques
+npm run ai-test -- run --url … --mode explore \
+  --techniques boundary-value,decision-table,error-guessing
+```
+
+Each generated scenario carries a `designTechnique` field; HTML report
+renders a "Technique coverage" panel.
+
+YAML test cases can declare the technique:
+
+```yaml
+test_cases:
+  - id: TC_LOGIN_001
+    design_technique: use-case
+    steps: …
+```
+
+### Non-functional checks
+
+- **Accessibility**: `@axe-core/playwright` violations → result.accessibilityViolations, mapped to WCAG levels.
+- **Performance**: inline `web-vitals` capture → LCP/CLS/INP/TTFB, configurable thresholds (warn vs fail).
+- **Security**: response headers (CSP, HSTS, X-Frame-Options or frame-ancestors, nosniff, Referrer-Policy) + cookie Secure/HttpOnly/SameSite.
+- **SPA waits**: `wait_for(strategy: visible | network-idle | mutation-stable | route-change)`.
+
+## 9. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|

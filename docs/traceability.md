@@ -16,11 +16,11 @@
 | REQ-008 | CLI, Config, Auth | 4 | implemented |
 | REQ-009 | Web Crawler & SiteMap | 4 | implemented (SPRINT-004) |
 | REQ-010 | Authenticated Test Flows | 2 | implemented (SPRINT-004) |
-| REQ-011 | ISTQB Test Plan & Suite | 3 | planned (SPRINT-005) |
-| REQ-012 | ISTQB Design Techniques | 2 | planned (SPRINT-005) |
-| REQ-013 | Non-Functional Quality Coverage | 4 | planned (SPRINT-005 / 006) |
-| REQ-014 | Stability — SPA waits, self-heal, screenshots, assertions | 4 | planned (SPRINT-005 / 006) |
-| REQ-015 | CI/CD Interop — JUnit + PR comment | 2 | planned (SPRINT-005 / 006) |
+| REQ-011 | ISTQB Test Plan & Suite | 3 | implemented (SPRINT-005, suite UI partial) |
+| REQ-012 | ISTQB Design Techniques | 2 | implemented (SPRINT-005) |
+| REQ-013 | Non-Functional Quality Coverage | 4 | partial: a11y/perf/security wired (SPRINT-005); multi-browser+locale = SPRINT-006 |
+| REQ-014 | Stability — SPA waits, self-heal, screenshots, assertions | 4 | partial: SPA waits + extended assertions (SPRINT-005); heal+screenshots = SPRINT-006 |
+| REQ-015 | CI/CD Interop — JUnit + PR comment | 2 | partial: JUnit XML (SPRINT-005); PR comment = SPRINT-006 |
 | REQ-016 | Advanced interactions + test data | 2 | planned (SPRINT-006) |
 | REQ-017 | Defects, coverage, cost guardrails | 3 | planned (SPRINT-006) |
 
