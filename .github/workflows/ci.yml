@@ -64,10 +64,16 @@ jobs:
   e2e:
     name: Playwright E2E (fixture app)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # for ai-test PR comment
     env:
       DATABASE_URL: postgresql://app:app@localhost:5432/app_test
       SESSION_SECRET: ci-session-secret-at-least-32-chars-long-enough
       AI_TEST_DEFAULT_PROVIDER: mock
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -85,12 +91,20 @@ jobs:
             --url http://127.0.0.1:4710/login.html \
             --test-case tests/fixtures/test-cases/login.yaml \
             --mode testcase
-      - name: Upload report
+      - name: Upload HTML/JSON report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ai-test-report
           path: reports/
+      - name: Publish JUnit results
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: ai-test JUnit
+          path: reports/junit/*.xml
+          reporter: java-junit
+          fail-on-error: false
 
   secret-scan:
     name: gitleaks

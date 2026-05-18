@@ -13,6 +13,11 @@ import { writeHtmlReport } from "../../reporter/html";
 import { writeJunitReport } from "../../reporter/junit";
 import { generateAndWriteTestPlan } from "../../reporter/test-plan-generator";
 import { assembleSuites } from "../../review/suite-assembler";
+import {
+  postPrComment,
+  readGithubPrEnvFromProcess,
+} from "../../reporter/github-pr";
+import { defectsRepo } from "../../db/defects";
 import { buildProvider } from "../../ai/factory";
 import { designScenarios } from "../../ai/agents/test-design";
 import { persistRun } from "../../db/runs";
@@ -286,6 +291,47 @@ export const runCommand: CliCommand = {
         `Note: DB persistence skipped (${(err as Error).message}).\n`,
       );
     });
+
+    // Persist AI-suggested defects (one row per failed scenario with
+    // suggestedDefect). No-op when the DB is unreachable.
+    let defectsInserted = 0;
+    for (let i = 0; i < scenarios.length; i++) {
+      const sd = validations[i].suggestedDefect;
+      if (!sd || validations[i].status !== "failed") continue;
+      try {
+        await defectsRepo.insert({
+          runId,
+          scenarioId: `${runId}::${scenarios[i].id}`,
+          summary: sd.summary,
+          stepsToReproduce: sd.stepsToReproduce,
+          evidenceLinks: sd.evidenceLinks,
+          severity: sd.severity,
+        });
+        defectsInserted++;
+      } catch {
+        // DB unavailable — fine.
+      }
+    }
+    if (defectsInserted > 0) {
+      process.stdout.write(`Defects:      ${defectsInserted} persisted\n`);
+    }
+
+    // GitHub PR comment (REQ-015) — silent no-op without env vars.
+    const prEnv = readGithubPrEnvFromProcess();
+    if (prEnv) {
+      try {
+        const url = await postPrComment(
+          summary,
+          { htmlReport: htmlPath, junit: junitPath },
+          prEnv,
+        );
+        if (url) process.stdout.write(`PR comment:   ${url}\n`);
+      } catch (err) {
+        process.stderr.write(
+          `Note: PR comment failed (${(err as Error).message}).\n`,
+        );
+      }
+    }
 
     return totals.failed > 0 ? 1 : 0;
   },

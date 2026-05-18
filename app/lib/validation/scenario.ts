@@ -22,6 +22,21 @@ export const Action = z.discriminatedUnion("keyword", [
     /** For mutation-stable: how long DOM must be quiet (ms). */
     quietMs: z.number().int().positive().optional(),
   }),
+  // Advanced interactions (REQ-016)
+  z.object({
+    keyword: z.literal("upload_file"),
+    target: Locator,
+    filePath: z.string().min(1),
+  }),
+  z.object({ keyword: z.literal("drag_drop"), source: Locator, target: Locator }),
+  z.object({ keyword: z.literal("type_keyboard"), keys: z.string().min(1) }),
+  z.object({ keyword: z.literal("scroll_to"), target: Locator }),
+  // Visual regression (REQ-014)
+  z.object({
+    keyword: z.literal("verify_screenshot"),
+    name: z.string().min(1),
+    threshold: z.number().min(0).max(1).optional(),
+  }),
 ]);
 export type Action = z.infer<typeof Action>;
 

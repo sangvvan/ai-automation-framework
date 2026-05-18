@@ -10,6 +10,9 @@ export interface TraceEntry {
   status: "ok" | "error" | "fallback";
   attempt: number;
   error?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  cumulativeTokens?: number;
 }
 
 export interface Tracer {

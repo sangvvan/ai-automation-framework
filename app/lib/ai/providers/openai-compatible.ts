@@ -1,4 +1,9 @@
-import type { AiProvider, GenerateInput } from "../provider";
+import type {
+  AiProvider,
+  GenerateInput,
+  GenerateResult,
+  TokenUsage,
+} from "../provider";
 import { ProviderError } from "../provider";
 
 /**
@@ -31,6 +36,13 @@ export class OpenAiCompatibleProvider implements AiProvider {
   }
 
   async generateStructured<T>(input: GenerateInput<T>): Promise<T> {
+    const r = await this.generateStructuredWithUsage(input);
+    return r.data;
+  }
+
+  async generateStructuredWithUsage<T>(
+    input: GenerateInput<T>,
+  ): Promise<GenerateResult<T>> {
     const timeoutMs = this.opts.timeoutMs ?? 60_000;
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -48,8 +60,6 @@ export class OpenAiCompatibleProvider implements AiProvider {
     const body = {
       model: this.opts.model,
       max_tokens: input.maxTokens ?? 4096,
-      // Encourage strict JSON. Servers that don't recognise response_format
-      // just ignore it — we still post-process the message text.
       response_format: { type: "json_object" } as const,
       temperature: 0.2,
       messages: [
@@ -79,6 +89,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
       }
       const payload = (await res.json()) as {
         choices: Array<{ message?: { content?: string } }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
       const text = payload.choices?.[0]?.message?.content ?? "";
       if (!text) {
@@ -101,7 +112,13 @@ export class OpenAiCompatibleProvider implements AiProvider {
           this.name,
         );
       }
-      return parsed.data as T;
+      const usage: TokenUsage | undefined = payload.usage
+        ? {
+            input: payload.usage.prompt_tokens ?? 0,
+            output: payload.usage.completion_tokens ?? 0,
+          }
+        : undefined;
+      return { data: parsed.data as T, usage };
     } finally {
       clearTimeout(t);
     }
