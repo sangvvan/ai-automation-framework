@@ -197,7 +197,45 @@ test_cases:
 - **Security**: response headers (CSP, HSTS, X-Frame-Options or frame-ancestors, nosniff, Referrer-Policy) + cookie Secure/HttpOnly/SameSite.
 - **SPA waits**: `wait_for(strategy: visible | network-idle | mutation-stable | route-change)`.
 
-## 9. Troubleshooting
+## 9. Multi-browser, locale, defects, baselines, PR comment (SPRINT-006)
+
+CLI flag matrix:
+
+```bash
+# Browser compatibility matrix
+npm run ai-test -- run --url … --mode explore \
+  --browsers chromium,firefox,webkit
+
+# i18n: same suite per locale
+npm run ai-test -- run --url … --mode explore --locales en,vi,ja
+
+# Toggle non-functional checks
+npm run ai-test -- run --url … --mode explore --a11y --vitals --security-headers
+
+# Cap AI usage
+npm run ai-test -- run --url … --mode explore --budget 50000
+```
+
+Additional artefacts:
+
+| Artefact | Path |
+|---|---|
+| Defects (one per failed scenario) | DB `defects` rows + `/runs/:runId/defects` UI |
+| Screenshot baselines | `reports/baselines/<suite>/<scenario>/<name>.png` |
+| Element coverage | `reports/coverage/{run-id}.json` |
+| PR comment | Posted to GitHub when `GITHUB_TOKEN`+`GITHUB_REPOSITORY`+PR context set |
+
+Screenshot baseline workflow:
+
+```bash
+# Add verify_screenshot('home') step to a scenario; first run captures
+# the baseline. Subsequent runs diff against it.
+
+# Promote new screenshots after an intentional UI change
+npm run ai-test -- baselines accept --run-id R-…
+```
+
+## 10. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|

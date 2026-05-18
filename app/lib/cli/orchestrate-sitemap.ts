@@ -87,7 +87,7 @@ export async function orchestrateSiteMap(
         scenarios = [smokeScenario(page.normalizedUrl, opts.runId, pageHash, analysis.title)];
       }
 
-      const results = await runScenarios(scenarios, {
+      const runOutcome = await runScenarios(scenarios, {
         headless: opts.cfg.runner.headless,
         stepTimeoutMs: opts.cfg.runner.stepTimeoutMs,
         navigationTimeoutMs: opts.cfg.runner.navigationTimeoutMs,
@@ -96,13 +96,13 @@ export async function orchestrateSiteMap(
         captureScreenshotOnSuccess: opts.cfg.runner.captureScreenshotOnSuccess,
       });
 
-      const validations = results.map((r, i) =>
+      const validations = runOutcome.results.map((r, i) =>
         validateScenarioResult(r, scenarios[i].expectedResult),
       );
 
       bundles.push({
         scenarios,
-        results,
+        results: runOutcome.results,
         validations,
         pageHash,
         pageUrl: page.normalizedUrl,

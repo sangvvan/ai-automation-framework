@@ -54,6 +54,25 @@ export const runCommand: CliCommand = {
         flag: "--techniques",
         description: "Comma-separated ISTQB design techniques to drive AI generation",
       },
+      {
+        flag: "--browsers",
+        description: "Comma-separated Playwright browsers: chromium,firefox,webkit",
+        default: "chromium",
+      },
+      {
+        flag: "--locales",
+        description: "Comma-separated BCP-47 locales (e.g. en,vi,ja)",
+      },
+      {
+        flag: "--budget",
+        description: "Hard cap on AI tokens for this run (overrides config)",
+      },
+      { flag: "--a11y", description: "Run axe-core post-scenario (boolean)" },
+      { flag: "--vitals", description: "Capture Web Vitals (boolean)" },
+      {
+        flag: "--security-headers",
+        description: "Validate HTTP security headers per nav (boolean)",
+      },
     ],
   },
   run: async (args) => {
@@ -125,10 +144,13 @@ export const runCommand: CliCommand = {
           return { ...s, steps: mapped.steps, warnings: mapped.warnings };
         });
       } else {
+        const budgetArg = flagString(args, "budget");
+        const tokenBudget = budgetArg ? Number(budgetArg) : undefined;
         const provider = buildProvider({
           config: cfg,
           role: "design",
           tracePath: path.join(evidenceDir, "ai-trace.jsonl"),
+          tokenBudget: Number.isFinite(tokenBudget) ? tokenBudget : undefined,
         });
         const techniquesArg = flagString(args, "techniques");
         const requestedTechniques = techniquesArg
@@ -170,14 +192,49 @@ export const runCommand: CliCommand = {
         }
       }
 
-      results = await runScenarios(scenarios, {
-        headless: cfg.runner.headless,
-        stepTimeoutMs: cfg.runner.stepTimeoutMs,
-        navigationTimeoutMs: cfg.runner.navigationTimeoutMs,
-        viewport: cfg.runner.viewport,
-        evidenceDir,
-        captureScreenshotOnSuccess: cfg.runner.captureScreenshotOnSuccess,
-      });
+      // Matrix: browsers × locales × scenarios (REQ-013).
+      const browsersFlag = flagString(args, "browsers") ?? "chromium";
+      const browsers = browsersFlag
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean) as import("../../browser/launcher").BrowserName[];
+      const localesFlag = flagString(args, "locales");
+      const locales = localesFlag
+        ? localesFlag.split(",").map((s) => s.trim()).filter(Boolean)
+        : [undefined];
+      const nonFunctional = {
+        a11y: !!args.flags["a11y"],
+        vitals: !!args.flags["vitals"],
+        securityHeaders: !!args.flags["security-headers"],
+      };
+
+      const matrixScenarios: ExecutableScenario[] = [];
+      const matrixResults: ScenarioResult[] = [];
+      for (const browser of browsers) {
+        for (const locale of locales) {
+          const tag =
+            (browsers.length > 1 ? `-${browser}` : "") +
+            (locale && locales.length > 1 ? `-${locale}` : "");
+          const tagged: ExecutableScenario[] = tag
+            ? scenarios.map((s) => ({ ...s, id: `${s.id}${tag}` }))
+            : scenarios;
+          const outcome = await runScenarios(tagged, {
+            headless: cfg.runner.headless,
+            stepTimeoutMs: cfg.runner.stepTimeoutMs,
+            navigationTimeoutMs: cfg.runner.navigationTimeoutMs,
+            viewport: cfg.runner.viewport,
+            evidenceDir,
+            captureScreenshotOnSuccess: cfg.runner.captureScreenshotOnSuccess,
+            browser,
+            locale,
+            nonFunctional,
+          });
+          matrixScenarios.push(...tagged);
+          matrixResults.push(...outcome.results);
+        }
+      }
+      scenarios = matrixScenarios;
+      results = matrixResults;
       validations = results.map((r, i) =>
         validateScenarioResult(r, scenarios[i].expectedResult),
       );
