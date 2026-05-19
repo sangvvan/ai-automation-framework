@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { CrawlConfig } from "../validation/sitemap";
+import { TestLevel } from "../validation";
 
 export const WorkflowRole = z.object({
   name: z.string().min(1),
@@ -10,6 +11,22 @@ export const WorkflowRole = z.object({
   allowCaptcha: z.boolean().default(false),
 });
 export type WorkflowRole = z.infer<typeof WorkflowRole>;
+
+/**
+ * Non-functional toggles a workflow can opt-in. Defaults are off so a
+ * vanilla workflow YAML stays cheap; teams that want full ISTQB coverage
+ * flip these on per project.
+ */
+export const WorkflowNonFunctional = z
+  .object({
+    a11y: z.boolean().default(false),
+    vitals: z.boolean().default(false),
+    securityHeaders: z.boolean().default(false),
+    a11yFailOn: z
+      .array(z.enum(["minor", "moderate", "serious", "critical"]))
+      .default([]),
+  })
+  .default({});
 
 export const WorkflowInput = z.object({
   project: z.string().min(1),
@@ -28,6 +45,24 @@ export const WorkflowInput = z.object({
     .object({
       captureScreenshotOnSuccess: z.boolean().optional(),
       suiteTag: z.string().min(1).optional(),
+      /** ISTQB test level surfaced in TestPlan + reports (REQ-011). */
+      testLevel: TestLevel.optional(),
+      /** Comma-separated browsers list (REQ-013). */
+      browsers: z
+        .array(z.enum(["chromium", "firefox", "webkit"]))
+        .default(["chromium"]),
+      /** Locales loop (REQ-013). */
+      locales: z.array(z.string().min(1)).default([]),
+      /** Non-functional post-checks (REQ-013). */
+      nonFunctional: WorkflowNonFunctional,
+      /** Emit a JUnit XML alongside JSON/HTML (REQ-015). */
+      junit: z.boolean().default(true),
+      /** Generate a TestPlan artefact per run (REQ-011). */
+      testPlan: z.boolean().default(true),
+      /** Auto-insert defects on failed scenarios when DB available (REQ-017). */
+      persistDefects: z.boolean().default(true),
+      /** Post a GitHub PR comment when GITHUB_* env present (REQ-015). */
+      prComment: z.boolean().default(true),
     })
     .default({}),
 });

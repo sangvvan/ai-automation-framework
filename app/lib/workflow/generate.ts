@@ -88,6 +88,12 @@ export async function generateTestCasesFromSiteMap(
         if (opts.fallbackSmoke === false) throw err;
         scenarios = [buildSmokeScenario(analysis.finalUrl, pageKey)];
       }
+      // Also fall back to smoke when the provider returned 0 scenarios
+      // (e.g. MockProvider with no fixtures swallows per-technique
+      // failures and yields an empty array rather than throwing).
+      if (scenarios.length === 0 && opts.fallbackSmoke !== false) {
+        scenarios = [buildSmokeScenario(analysis.finalUrl, pageKey)];
+      }
 
       const filePath = path.join(casesDir, `${pageKey}.yaml`);
       await writeFile(filePath, scenariosToYaml(page.normalizedUrl, scenarios));

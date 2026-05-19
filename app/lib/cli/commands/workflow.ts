@@ -107,11 +107,27 @@ export const workflowCommand: CliCommand = {
         role: role.name,
         suiteTag: input.run.suiteTag ?? `${projectKey}-${roleKey}`,
         captureScreenshotOnSuccess: input.run.captureScreenshotOnSuccess,
+        testLevel: input.run.testLevel,
+        browsers: input.run.browsers,
+        locales: input.run.locales.length ? input.run.locales : undefined,
+        nonFunctional: input.run.nonFunctional,
+        junit: input.run.junit,
+        testPlan: input.run.testPlan,
+        persistDefects: input.run.persistDefects,
+        prComment: input.run.prComment,
       });
       process.stdout.write(
         `  run: ${result.runId} total=${result.totals.total} passed=${result.totals.passed} failed=${result.totals.failed}\n`,
       );
-      process.stdout.write(`  report: ${result.htmlPath}\n`);
+      process.stdout.write(`  HTML:    ${result.htmlPath}\n`);
+      if (result.junitPath) process.stdout.write(`  JUnit:   ${result.junitPath}\n`);
+      if (result.testPlanPath) process.stdout.write(`  TestPlan: ${result.testPlanPath}\n`);
+      if (result.defectsInserted > 0) {
+        process.stdout.write(`  defects: ${result.defectsInserted} persisted\n`);
+      }
+      if (result.prCommentUrl) {
+        process.stdout.write(`  PR comment: ${result.prCommentUrl}\n`);
+      }
       if (result.persistenceWarning) {
         process.stderr.write(
           `  note: run DB persistence skipped (${result.persistenceWarning})\n`,

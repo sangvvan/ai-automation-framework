@@ -12,3 +12,15 @@ generation:
   fallbackSmoke: true
 run:
   suiteTag: fixture-app-anonymous
+  testLevel: system
+  browsers: [chromium]
+  locales: []
+  nonFunctional:
+    a11y: false        # flip true when @axe-core/playwright is desired
+    vitals: true       # capture LCP/CLS/INP/TTFB per scenario
+    securityHeaders: true
+    a11yFailOn: []     # e.g. [serious, critical] to gate the run
+  junit: true          # reports/junit/{runId}.xml
+  testPlan: true       # reports/test-plans/{runId}.json
+  persistDefects: true # one row per failed scenario when DB available
+  prComment: true      # posts on GitHub when GITHUB_TOKEN/REPOSITORY/PR set

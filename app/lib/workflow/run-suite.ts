@@ -4,20 +4,30 @@ import path from "node:path";
 import { analyzePage } from "../analyzer/analyze";
 import type { FrameworkConfig } from "../config";
 import { persistRun } from "../db/runs";
+import { defectsRepo } from "../db/defects";
 import { generateRunId } from "../cli/run-id";
 import { parseTestCaseFile } from "../scenario/parse";
 import { mapStepsToActions } from "../scenario/step-mapper";
 import { writeHtmlReport } from "../reporter/html";
 import { writeJsonReport } from "../reporter/json";
+import { writeJunitReport } from "../reporter/junit";
+import { generateAndWriteTestPlan } from "../reporter/test-plan-generator";
+import { assembleSuites } from "../review/suite-assembler";
+import {
+  postPrComment,
+  readGithubPrEnvFromProcess,
+} from "../reporter/github-pr";
 import { runScenarios } from "../runner/runner";
 import { validateScenarioResult } from "../validator/validate";
 import {
   ExecutableScenario,
   type RunSummary,
   type ScenarioResult,
+  type TestLevel,
   type ValidationResult,
 } from "../validation";
 import { SiteMap } from "../validation/sitemap";
+import type { BrowserName } from "../browser/launcher";
 
 export interface RunSuiteOptions {
   cfg: FrameworkConfig;
@@ -28,15 +38,40 @@ export interface RunSuiteOptions {
   role?: string;
   suiteTag?: string;
   captureScreenshotOnSuccess?: boolean;
+  /** ISTQB test level surfaced in reports + TestPlan (REQ-011). */
+  testLevel?: TestLevel;
+  /** Browser matrix (REQ-013). Defaults to chromium only. */
+  browsers?: BrowserName[];
+  /** Locale matrix (REQ-013). Undefined entry = no locale override. */
+  locales?: (string | undefined)[];
+  /** Non-functional post-checks (REQ-013). */
+  nonFunctional?: {
+    a11y?: boolean;
+    vitals?: boolean;
+    securityHeaders?: boolean;
+    a11yFailOn?: ("minor" | "moderate" | "serious" | "critical")[];
+  };
+  /** Emit JUnit XML (default true). */
+  junit?: boolean;
+  /** Emit TestPlan JSON (default true). */
+  testPlan?: boolean;
+  /** Insert one defects row per failed scenario when DB available. */
+  persistDefects?: boolean;
+  /** Post a GitHub PR comment when env present. */
+  prComment?: boolean;
 }
 
 export interface RunSuiteResult {
   runId: string;
   jsonPath: string;
   htmlPath: string;
+  junitPath?: string;
+  testPlanPath?: string;
   totals: RunSummary["totals"];
   filesRun: string[];
   filesSkipped: { filePath: string; reason: string }[];
+  defectsInserted: number;
+  prCommentUrl?: string | null;
   persistenceWarning?: string;
 }
 
@@ -51,6 +86,12 @@ export async function runTestCaseSuite(
   const evidenceDir = path.join(opts.cfg.evidenceDir, runId);
   await mkdir(evidenceDir, { recursive: true });
 
+  const browsers: BrowserName[] = opts.browsers && opts.browsers.length
+    ? opts.browsers
+    : ["chromium"];
+  const locales: (string | undefined)[] =
+    opts.locales && opts.locales.length ? opts.locales : [undefined];
+
   const allScenarios: ExecutableScenario[] = [];
   const allResults: ScenarioResult[] = [];
   const allValidations: ValidationResult[] = [];
@@ -58,7 +99,16 @@ export async function runTestCaseSuite(
   const filesSkipped: { filePath: string; reason: string }[] = [];
 
   for (const file of files) {
-    const parsed = await parseTestCaseFile(file);
+    let parsed: ExecutableScenario[];
+    try {
+      parsed = await parseTestCaseFile(file);
+    } catch (err) {
+      filesSkipped.push({
+        filePath: file,
+        reason: `parse error: ${(err as Error).message.slice(0, 160)}`,
+      });
+      continue;
+    }
     if (!parsed.length) {
       filesSkipped.push({ filePath: file, reason: "no scenarios" });
       continue;
@@ -81,7 +131,7 @@ export async function runTestCaseSuite(
       storageStatePath,
     });
 
-    const scenarios = parsed.map((scenario) => {
+    const baseScenarios = parsed.map((scenario) => {
       const mapped = mapStepsToActions(scenario.steps, analysis, scenario.pageUrl);
       return ExecutableScenario.parse({
         ...scenario,
@@ -90,24 +140,38 @@ export async function runTestCaseSuite(
       });
     });
 
-    const outcome = await runScenarios(scenarios, {
-      headless: opts.cfg.runner.headless,
-      stepTimeoutMs: opts.cfg.runner.stepTimeoutMs,
-      navigationTimeoutMs: opts.cfg.runner.navigationTimeoutMs,
-      viewport: opts.cfg.runner.viewport,
-      evidenceDir: pageDir,
-      captureScreenshotOnSuccess:
-        opts.captureScreenshotOnSuccess ?? opts.cfg.runner.captureScreenshotOnSuccess,
-      storageStatePath,
-    });
-    const results = outcome.results;
-    const validations = results.map((result, i) =>
-      validateScenarioResult(result, scenarios[i].expectedResult),
-    );
+    // Browser × locale matrix (REQ-013).
+    for (const browser of browsers) {
+      for (const locale of locales) {
+        const tag =
+          (browsers.length > 1 ? `-${browser}` : "") +
+          (locale && locales.length > 1 ? `-${locale}` : "");
+        const matrixScenarios: ExecutableScenario[] = tag
+          ? baseScenarios.map((s) => ({ ...s, id: `${s.id}${tag}` }))
+          : baseScenarios;
+        const outcome = await runScenarios(matrixScenarios, {
+          headless: opts.cfg.runner.headless,
+          stepTimeoutMs: opts.cfg.runner.stepTimeoutMs,
+          navigationTimeoutMs: opts.cfg.runner.navigationTimeoutMs,
+          viewport: opts.cfg.runner.viewport,
+          evidenceDir: pageDir,
+          captureScreenshotOnSuccess:
+            opts.captureScreenshotOnSuccess ?? opts.cfg.runner.captureScreenshotOnSuccess,
+          storageStatePath,
+          browser,
+          locale,
+          nonFunctional: opts.nonFunctional,
+        });
+        const results = outcome.results;
+        const validations = results.map((result, i) =>
+          validateScenarioResult(result, matrixScenarios[i].expectedResult),
+        );
 
-    allScenarios.push(...scenarios);
-    allResults.push(...results);
-    allValidations.push(...validations);
+        allScenarios.push(...matrixScenarios);
+        allResults.push(...results);
+        allValidations.push(...validations);
+      }
+    }
     filesRun.push(file);
   }
 
@@ -124,6 +188,30 @@ export async function runTestCaseSuite(
     skipped: allResults.filter((r) => r.status === "skipped").length,
   };
 
+  // Suite assembly (REQ-011) for JUnit grouping.
+  const assembled = assembleSuites(allScenarios);
+  const suiteGrouping = {
+    names: Object.fromEntries(assembled.map((s) => [s.tempId, s.name])),
+    members: Object.fromEntries(
+      assembled.map((s) => [s.tempId, s.scenarios.map((sc) => sc.id)]),
+    ),
+  };
+
+  // Technique coverage roll-up (REQ-012).
+  const techniqueRoll = new Map<string, { total: number; passed: number }>();
+  for (let i = 0; i < allScenarios.length; i++) {
+    const technique = allScenarios[i].designTechnique ?? "error-guessing";
+    const r = techniqueRoll.get(technique) ?? { total: 0, passed: 0 };
+    r.total++;
+    if (allValidations[i].status === "passed") r.passed++;
+    techniqueRoll.set(technique, r);
+  }
+  const techniqueCoverage = [...techniqueRoll.entries()].map(([technique, v]) => ({
+    technique,
+    total: v.total,
+    passed: v.passed,
+  }));
+
   const app = [
     opts.project ? `project:${opts.project}` : undefined,
     opts.role ? `role:${opts.role}` : undefined,
@@ -136,6 +224,7 @@ export async function runTestCaseSuite(
     mode: "testcase",
     app: app || `suite:${opts.casesDir}`,
     suiteTag: opts.suiteTag,
+    testLevel: opts.testLevel ?? "system",
     startedAt,
     finishedAt,
     totals,
@@ -145,7 +234,35 @@ export async function runTestCaseSuite(
       validation: allValidations[i],
     })),
     environment: { node: process.version, platform: process.platform },
+    techniqueCoverage,
   };
+
+  // Test Plan (REQ-011) — emit before JSON/HTML so the JSON can link it.
+  // Pass the parsed SiteMap (when available) so testItems lists actual
+  // pages instead of falling back to the workflow's role label.
+  let testPlanPath: string | undefined;
+  if (opts.testPlan !== false) {
+    let siteMap: import("../validation").SiteMap | undefined;
+    if (opts.siteMapPath) {
+      try {
+        const raw = await readFile(opts.siteMapPath, "utf8");
+        siteMap = SiteMap.parse(JSON.parse(raw));
+      } catch {
+        /* TestPlan still emits with workflow label as fallback */
+      }
+    }
+    try {
+      testPlanPath = await generateAndWriteTestPlan({
+        summary,
+        siteMap,
+        cfg: opts.cfg,
+        reportsDir: opts.cfg.reportsDir,
+      });
+      summary.testPlanPath = testPlanPath;
+    } catch (err) {
+      process.stderr.write(`  note: TestPlan generation skipped (${(err as Error).message})\n`);
+    }
+  }
 
   const jsonPath = await writeJsonReport(summary, {
     maskKeys: opts.cfg.report.maskKeys,
@@ -155,9 +272,22 @@ export async function runTestCaseSuite(
     maskKeys: opts.cfg.report.maskKeys,
     reportsDir: opts.cfg.reportsDir,
   });
+
+  let junitPath: string | undefined;
+  if (opts.junit !== false) {
+    junitPath = await writeJunitReport(summary, {
+      reportsDir: opts.cfg.reportsDir,
+      suites: suiteGrouping,
+    });
+  }
+
   await writeFile(
     path.join(evidenceDir, "run-summary.json"),
-    JSON.stringify({ runId, jsonPath, htmlPath, totals, filesRun, filesSkipped }, null, 2),
+    JSON.stringify(
+      { runId, jsonPath, htmlPath, junitPath, testPlanPath, totals, filesRun, filesSkipped },
+      null,
+      2,
+    ),
   );
 
   let persistenceWarning: string | undefined;
@@ -165,13 +295,58 @@ export async function runTestCaseSuite(
     persistenceWarning = (err as Error).message;
   });
 
+  // Defect persistence (REQ-017). Best-effort: needs DB.
+  let defectsInserted = 0;
+  if (opts.persistDefects !== false) {
+    for (let i = 0; i < allScenarios.length; i++) {
+      const sd = allValidations[i].suggestedDefect;
+      if (!sd || allValidations[i].status !== "failed") continue;
+      try {
+        await defectsRepo.insert({
+          runId,
+          scenarioId: `${runId}::${allScenarios[i].id}`,
+          summary: sd.summary,
+          stepsToReproduce: sd.stepsToReproduce,
+          evidenceLinks: sd.evidenceLinks,
+          severity: sd.severity,
+        });
+        defectsInserted++;
+      } catch {
+        // DB unavailable — fine.
+      }
+    }
+  }
+
+  // GitHub PR comment (REQ-015). No-op without env.
+  let prCommentUrl: string | null | undefined;
+  if (opts.prComment !== false) {
+    const prEnv = readGithubPrEnvFromProcess();
+    if (prEnv) {
+      try {
+        prCommentUrl = await postPrComment(
+          summary,
+          { htmlReport: htmlPath, junit: junitPath },
+          prEnv,
+        );
+      } catch (err) {
+        process.stderr.write(
+          `  note: PR comment failed (${(err as Error).message})\n`,
+        );
+      }
+    }
+  }
+
   return {
     runId,
     jsonPath,
     htmlPath,
+    junitPath,
+    testPlanPath,
     totals,
     filesRun,
     filesSkipped,
+    defectsInserted,
+    prCommentUrl,
     persistenceWarning,
   };
 }
