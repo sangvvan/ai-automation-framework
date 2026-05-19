@@ -1,13 +1,33 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { launchBrowser } from "../browser/launcher";
+import { launchBrowser, type BrowserName } from "../browser/launcher";
 import { executeAction } from "./keywords";
+import { runA11yCheck } from "../validator/checks/non-functional/a11y";
+import { injectVitalsScript, captureVitals } from "../validator/checks/non-functional/web-vitals";
+import { validateSecurityHeaders } from "../validator/checks/non-functional/security-headers";
 import type {
+  A11yViolation,
   ConsoleMessage,
   ExecutableScenario,
+  Locator,
   ScenarioResult,
   StepResult,
+  WebVitals,
+  SecurityCheck,
+  ValidationCheck,
 } from "../validation";
+
+export interface NonFunctionalOpts {
+  /** Toggle axe-core post-scenario (REQ-013). */
+  a11y?: boolean;
+  /** Axe impact levels that should fail the scenario. */
+  a11yFailOn?: ("minor" | "moderate" | "serious" | "critical")[];
+  /** Toggle Web Vitals capture. */
+  vitals?: boolean;
+  vitalsThresholds?: { lcpMs?: number; cls?: number; inpMs?: number; ttfbMs?: number };
+  /** Toggle security-header validation per navigation. */
+  securityHeaders?: boolean;
+}
 
 export interface RunOptions {
   headless?: boolean;
@@ -16,6 +36,19 @@ export interface RunOptions {
   viewport: { width: number; height: number };
   evidenceDir: string;
   captureScreenshotOnSuccess?: boolean;
+  /** Browser engine; default chromium. (REQ-013 multi-browser) */
+  browser?: BrowserName;
+  /** BCP-47 locale; default unset. (REQ-013 i18n) */
+  locale?: string;
+  /** Screenshot-baseline + sensitive masking env (REQ-014). */
+  baselinesRoot?: string;
+  suiteSlug?: string;
+  sensitiveSelectors?: string[];
+  /** Non-functional post-checks (REQ-013). */
+  nonFunctional?: NonFunctionalOpts;
+  /** Optional storage-state path. Accept both names for compat. */
+  storageState?: string;
+  /** Alias for `storageState` (used by workflow subsystem). */
   storageStatePath?: string;
 }
 
@@ -26,18 +59,26 @@ export interface RunOptions {
 export async function runScenarios(
   scenarios: ExecutableScenario[],
   opts: RunOptions,
-): Promise<ScenarioResult[]> {
+): Promise<{ results: ScenarioResult[]; touched: Locator[][] }> {
   const results: ScenarioResult[] = [];
+  const touched: Locator[][] = [];
   for (const scenario of scenarios) {
-    results.push(await runOne(scenario, opts));
+    const r = await runOne(scenario, opts);
+    results.push(r.result);
+    touched.push(r.touched);
   }
-  return results;
+  return { results, touched };
+}
+
+interface RunOneOutcome {
+  result: ScenarioResult;
+  touched: Locator[];
 }
 
 async function runOne(
   scenario: ExecutableScenario,
   opts: RunOptions,
-): Promise<ScenarioResult> {
+): Promise<RunOneOutcome> {
   const startedAt = new Date().toISOString();
   const scenarioDir = path.join(opts.evidenceDir, scenario.id);
   await mkdir(scenarioDir, { recursive: true });
@@ -46,19 +87,63 @@ async function runOne(
     headless: opts.headless,
     viewport: opts.viewport,
     navigationTimeoutMs: opts.navigationTimeoutMs,
-    storageState: opts.storageStatePath,
+    browser: opts.browser,
+    locale: opts.locale,
+    storageState: opts.storageState ?? opts.storageStatePath,
   });
+
+  if (opts.nonFunctional?.vitals) {
+    await injectVitalsScript(session.page).catch(() => undefined);
+  }
+
+  // Capture response headers for security-headers validator.
+  const securityChecks: SecurityCheck[] = [];
+  const extraValidationChecks: ValidationCheck[] = [];
+  if (opts.nonFunctional?.securityHeaders) {
+    session.page.on("response", async (response) => {
+      try {
+        // Only check top-level navigations.
+        if (response.request().resourceType() !== "document") return;
+        const headers = response.headers();
+        const cookies = await session.context.cookies(response.url()).catch(() => []);
+        const result = validateSecurityHeaders({
+          headers,
+          url: response.url(),
+          cookies: cookies.map((c) => ({
+            name: c.name,
+            secure: c.secure,
+            httpOnly: c.httpOnly,
+            sameSite: c.sameSite,
+          })),
+        });
+        securityChecks.push(...result.checks);
+        extraValidationChecks.push(...result.validationChecks);
+      } catch {
+        /* response handler should never throw */
+      }
+    });
+  }
 
   const ctx = {
     page: session.page,
     stepTimeoutMs: opts.stepTimeoutMs,
     navigationTimeoutMs: opts.navigationTimeoutMs,
+    env: opts.baselinesRoot
+      ? {
+          baselinesRoot: opts.baselinesRoot,
+          evidenceDir: scenarioDir,
+          suiteSlug: opts.suiteSlug ?? "default",
+          scenarioId: scenario.id,
+          sensitiveSelectors: opts.sensitiveSelectors,
+        }
+      : undefined,
   };
 
   const tracePath = path.join(scenarioDir, "trace.zip");
   await session.startTrace(scenarioDir);
 
   const steps: StepResult[] = [];
+  const touched: Locator[] = [];
   let status: ScenarioResult["status"] = "passed";
   let screenshotPath: string | undefined;
   let finalUrl: string | undefined;
@@ -68,6 +153,8 @@ async function runOne(
     const stepStart = Date.now();
     try {
       await executeAction(ctx, step.action);
+      // Record touched locators for coverage tracking (REQ-017).
+      collectTouched(step.action, touched);
       const stepResult: StepResult = {
         index: step.index,
         status: "passed",
@@ -94,12 +181,40 @@ async function runOne(
       });
       status = "failed";
       screenshotPath = failPng;
-      // halt remaining steps
       const remaining = scenario.steps.slice(scenario.steps.indexOf(step) + 1);
       for (const r of remaining) {
         steps.push({ index: r.index, status: "skipped", durationMs: 0 });
       }
       break;
+    }
+  }
+
+  // Post-scenario checks (REQ-013).
+  let accessibilityViolations: A11yViolation[] | undefined;
+  let webVitals: WebVitals | undefined;
+
+  if (opts.nonFunctional?.a11y && status === "passed") {
+    try {
+      const a11y = await runA11yCheck(session.page, {
+        failOn: opts.nonFunctional.a11yFailOn,
+      });
+      accessibilityViolations = a11y.violations;
+      extraValidationChecks.push(a11y.check);
+      if (a11y.check.status === "failed") {
+        status = "failed";
+      }
+    } catch {
+      /* swallow — a11y is best-effort */
+    }
+  }
+
+  if (opts.nonFunctional?.vitals) {
+    try {
+      const v = await captureVitals(session.page, opts.nonFunctional.vitalsThresholds);
+      webVitals = v.vitals;
+      extraValidationChecks.push(...v.checks);
+    } catch {
+      /* best-effort */
     }
   }
 
@@ -118,17 +233,33 @@ async function runOne(
   await session.close();
 
   return {
-    scenarioId: scenario.id,
-    status,
-    steps,
-    startedAt,
-    finishedAt: new Date().toISOString(),
-    tracePath,
-    screenshotPath,
-    finalUrl,
-    finalText,
-    consoleMessages,
+    result: {
+      scenarioId: scenario.id,
+      status,
+      steps,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      tracePath,
+      screenshotPath,
+      finalUrl,
+      finalText,
+      consoleMessages,
+      browser: opts.browser ?? "chromium",
+      locale: opts.locale,
+      accessibilityViolations,
+      webVitals,
+      securityChecks: securityChecks.length ? securityChecks : undefined,
+    },
+    touched,
   };
+}
+
+function collectTouched(
+  action: ExecutableScenario["steps"][number]["action"],
+  out: Locator[],
+): void {
+  if ("target" in action && action.target) out.push(action.target);
+  if ("source" in action && action.source) out.push(action.source);
 }
 
 function classifyError(err: unknown): string {

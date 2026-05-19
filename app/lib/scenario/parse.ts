@@ -11,6 +11,7 @@ import {
   type ScenarioType,
   Priority,
   ScenarioType as ScenarioTypeEnum,
+  DesignTechnique,
 } from "../validation";
 
 export class TestCaseValidationError extends Error {
@@ -29,6 +30,8 @@ const RawTestCaseSchema = z.object({
   title: z.string().min(1),
   priority: Priority.optional().default("P2"),
   type: ScenarioTypeEnum.optional().default("positive"),
+  /** Optional ISTQB design technique tag (REQ-012). */
+  design_technique: DesignTechnique.optional(),
   steps: z.array(RawStepStringSchema).min(1),
   expected_result: z.string().min(1).optional(),
   expected_url: z.string().min(1).optional(),
@@ -159,6 +162,7 @@ function buildScenarios(
       title: tc.title,
       type: tc.type,
       priority: tc.priority,
+      designTechnique: tc.design_technique ?? "error-guessing",
       pageUrl: raw.page_url,
       steps,
       expectedResult,

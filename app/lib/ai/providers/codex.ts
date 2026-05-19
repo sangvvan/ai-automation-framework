@@ -1,5 +1,5 @@
 import { getEnv } from "../../config";
-import type { AiProvider, GenerateInput } from "../provider";
+import type { AiProvider, GenerateInput, GenerateResult } from "../provider";
 import { OpenAiCompatibleProvider } from "./openai-compatible";
 
 /**
@@ -26,5 +26,11 @@ export class CodexProvider implements AiProvider {
 
   generateStructured<T>(input: GenerateInput<T>): Promise<T> {
     return this.inner.generateStructured(input);
+  }
+
+  generateStructuredWithUsage<T>(
+    input: GenerateInput<T>,
+  ): Promise<GenerateResult<T>> {
+    return this.inner.generateStructuredWithUsage(input);
   }
 }

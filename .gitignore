@@ -10,3 +10,10 @@ tests/generated/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Framework run artefacts (per-run / per-crawl; never commit)
+reports/
+playwright-report/
+test-results/
+inputs/auth/*.draft.yaml
+inputs/auth/*-storage-state.json

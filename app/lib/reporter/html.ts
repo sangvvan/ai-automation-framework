@@ -45,7 +45,12 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
   <header class="hdr">
     <div>
       <h1>${escapeHtml(summary.app ?? "Run")}</h1>
-      <div class="sub">${escapeHtml(summary.runId)} · ${escapeHtml(summary.mode)} · ${escapeHtml(summary.startedAt)} → ${escapeHtml(summary.finishedAt)}</div>
+      <div class="sub">
+        ${escapeHtml(summary.runId)} ·
+        <span class="pill">${escapeHtml(summary.mode)}</span>
+        <span class="pill pill-level">level: ${escapeHtml(summary.testLevel ?? "system")}</span>
+        · ${escapeHtml(summary.startedAt)} → ${escapeHtml(summary.finishedAt)}
+      </div>
     </div>
   </header>
 
@@ -57,6 +62,7 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
   </section>
 
   ${diff ? renderDiff(diff) : ""}
+  ${renderTechniqueCoverage(summary)}
 
   <section class="list">
     ${rows || '<p class="muted">No scenarios in this run.</p>'}
@@ -160,7 +166,39 @@ function kpiCard(label: string, n: number, cls: string, pct?: number): string {
     </div>`;
 }
 
-const CSS = `
+function renderTechniqueCoverage(summary: RunSummary): string {
+  const coverage = summary.techniqueCoverage ?? [];
+  if (coverage.length === 0) return "";
+  const rows = coverage
+    .map((c) => {
+      const pct = c.total ? Math.round((c.passed / c.total) * 100) : 0;
+      return `<tr><td><code>${escapeHtml(c.technique)}</code></td><td>${c.total}</td><td>${c.passed}</td><td>${pct}%</td></tr>`;
+    })
+    .join("");
+  return `
+  <section class="cov">
+    <h2>ISTQB technique coverage</h2>
+    <table>
+      <thead>
+        <tr><th>Technique</th><th>Total</th><th>Passed</th><th>Pass rate</th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
+const COV_CSS = `
+  .cov{margin:0 24px 12px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 16px}
+  .cov h2{margin:0 0 8px;font-size:1rem}
+  .cov table{width:100%;border-collapse:collapse;font-size:.9rem}
+  .cov th, .cov td{text-align:left;padding:4px 6px;border-bottom:1px dashed #e2e8f0}
+  .pill-level{margin-left:4px}
+  @media (prefers-color-scheme: dark){
+    .cov{background:#0f172a;border-color:#1e293b}
+  }
+`;
+
+const CSS = COV_CSS + `
   *{box-sizing:border-box}
   body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f8fafc;color:#0f172a}
   .hdr{padding:16px 24px;background:#fff;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10}

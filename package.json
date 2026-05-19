@@ -16,6 +16,7 @@
     "ai-test": "tsx scripts/ai-test.ts",
     "fixture:serve": "node tests/fixtures/sample-app/server.mjs",
     "test": "vitest run",
+    "test:framework-system": "vitest run --config vitest.system.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",

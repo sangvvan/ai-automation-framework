@@ -10,6 +10,14 @@ import { runScenarios } from "../../runner/runner";
 import { validateScenarioResult } from "../../validator/validate";
 import { writeJsonReport } from "../../reporter/json";
 import { writeHtmlReport } from "../../reporter/html";
+import { writeJunitReport } from "../../reporter/junit";
+import { generateAndWriteTestPlan } from "../../reporter/test-plan-generator";
+import { assembleSuites } from "../../review/suite-assembler";
+import {
+  postPrComment,
+  readGithubPrEnvFromProcess,
+} from "../../reporter/github-pr";
+import { defectsRepo } from "../../db/defects";
 import { buildProvider } from "../../ai/factory";
 import { designScenarios } from "../../ai/agents/test-design";
 import { persistRun } from "../../db/runs";
@@ -37,6 +45,34 @@ export const runCommand: CliCommand = {
       { flag: "--output-dir", description: "Override reports root" },
       { flag: "--suite-tag", description: "Tag for regression-diff grouping" },
       { flag: "--storage-state", description: "Override storage-state.json path" },
+      {
+        flag: "--test-level",
+        description: "unit | component | integration | system | acceptance",
+        default: "system",
+      },
+      {
+        flag: "--techniques",
+        description: "Comma-separated ISTQB design techniques to drive AI generation",
+      },
+      {
+        flag: "--browsers",
+        description: "Comma-separated Playwright browsers: chromium,firefox,webkit",
+        default: "chromium",
+      },
+      {
+        flag: "--locales",
+        description: "Comma-separated BCP-47 locales (e.g. en,vi,ja)",
+      },
+      {
+        flag: "--budget",
+        description: "Hard cap on AI tokens for this run (overrides config)",
+      },
+      { flag: "--a11y", description: "Run axe-core post-scenario (boolean)" },
+      { flag: "--vitals", description: "Capture Web Vitals (boolean)" },
+      {
+        flag: "--security-headers",
+        description: "Validate HTTP security headers per nav (boolean)",
+      },
     ],
   },
   run: async (args) => {
@@ -108,17 +144,26 @@ export const runCommand: CliCommand = {
           return { ...s, steps: mapped.steps, warnings: mapped.warnings };
         });
       } else {
+        const budgetArg = flagString(args, "budget");
+        const tokenBudget = budgetArg ? Number(budgetArg) : undefined;
         const provider = buildProvider({
           config: cfg,
           role: "design",
           tracePath: path.join(evidenceDir, "ai-trace.jsonl"),
+          tokenBudget: Number.isFinite(tokenBudget) ? tokenBudget : undefined,
         });
+        const techniquesArg = flagString(args, "techniques");
+        const requestedTechniques = techniquesArg
+          ? (techniquesArg.split(",").map((s) => s.trim()).filter(Boolean) as
+              import("../../validation").DesignTechnique[])
+          : undefined;
         try {
           scenarios = await designScenarios({
             analysis,
             provider,
             maxScenarios: cfg.generation.maxScenarios,
             categories: cfg.generation.categories,
+            requestedTechniques,
           });
         } catch (err) {
           process.stderr.write(
@@ -147,15 +192,51 @@ export const runCommand: CliCommand = {
         }
       }
 
-      results = await runScenarios(scenarios, {
-        headless: cfg.runner.headless,
-        stepTimeoutMs: cfg.runner.stepTimeoutMs,
-        navigationTimeoutMs: cfg.runner.navigationTimeoutMs,
-        viewport: cfg.runner.viewport,
-        evidenceDir,
-        captureScreenshotOnSuccess: cfg.runner.captureScreenshotOnSuccess,
-        storageStatePath: flagString(args, "storage-state"),
-      });
+      // Matrix: browsers × locales × scenarios (REQ-013).
+      const browsersFlag = flagString(args, "browsers") ?? "chromium";
+      const browsers = browsersFlag
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean) as import("../../browser/launcher").BrowserName[];
+      const localesFlag = flagString(args, "locales");
+      const locales = localesFlag
+        ? localesFlag.split(",").map((s) => s.trim()).filter(Boolean)
+        : [undefined];
+      const nonFunctional = {
+        a11y: !!args.flags["a11y"],
+        vitals: !!args.flags["vitals"],
+        securityHeaders: !!args.flags["security-headers"],
+      };
+      const storageStatePath = flagString(args, "storage-state");
+
+      const matrixScenarios: ExecutableScenario[] = [];
+      const matrixResults: ScenarioResult[] = [];
+      for (const browser of browsers) {
+        for (const locale of locales) {
+          const tag =
+            (browsers.length > 1 ? `-${browser}` : "") +
+            (locale && locales.length > 1 ? `-${locale}` : "");
+          const tagged: ExecutableScenario[] = tag
+            ? scenarios.map((s) => ({ ...s, id: `${s.id}${tag}` }))
+            : scenarios;
+          const outcome = await runScenarios(tagged, {
+            headless: cfg.runner.headless,
+            stepTimeoutMs: cfg.runner.stepTimeoutMs,
+            navigationTimeoutMs: cfg.runner.navigationTimeoutMs,
+            viewport: cfg.runner.viewport,
+            evidenceDir,
+            captureScreenshotOnSuccess: cfg.runner.captureScreenshotOnSuccess,
+            browser,
+            locale,
+            nonFunctional,
+            storageStatePath,
+          });
+          matrixScenarios.push(...tagged);
+          matrixResults.push(...outcome.results);
+        }
+      }
+      scenarios = matrixScenarios;
+      results = matrixResults;
       validations = results.map((r, i) =>
         validateScenarioResult(r, scenarios[i].expectedResult),
       );
@@ -174,11 +255,44 @@ export const runCommand: CliCommand = {
       skipped: results.filter((r) => r.status === "skipped").length,
     };
 
+    // Assemble suites (one per page; ad-hoc fallback). Used for JUnit
+    // grouping and persisted by the DB layer later if available.
+    const assembled = assembleSuites(scenarios);
+    const suiteOf = new Map<string, string>(); // scenarioId → suite display name
+    const suiteGrouping: { names: Record<string, string>; members: Record<string, string[]> } = {
+      names: {},
+      members: {},
+    };
+    for (const s of assembled) {
+      suiteGrouping.names[s.tempId] = s.name;
+      suiteGrouping.members[s.tempId] = s.scenarios.map((sc) => sc.id);
+      for (const sc of s.scenarios) suiteOf.set(sc.id, s.name);
+    }
+
+    // Roll-up by ISTQB design technique (REQ-012 §coverage panel).
+    const techniqueRoll = new Map<string, { total: number; passed: number }>();
+    for (let i = 0; i < scenarios.length; i++) {
+      const technique = scenarios[i].designTechnique ?? "error-guessing";
+      const r = techniqueRoll.get(technique) ?? { total: 0, passed: 0 };
+      r.total++;
+      if (validations[i].status === "passed") r.passed++;
+      techniqueRoll.set(technique, r);
+    }
+    const techniqueCoverage = [...techniqueRoll.entries()].map(([technique, v]) => ({
+      technique,
+      total: v.total,
+      passed: v.passed,
+    }));
+
+    const testLevel = (flagString(args, "test-level") ?? "system") as
+      | "unit" | "component" | "integration" | "system" | "acceptance";
+
     const summary: RunSummary = {
       runId,
       mode,
       app: appLabel,
       suiteTag: flagString(args, "suite-tag"),
+      testLevel,
       startedAt,
       finishedAt,
       totals,
@@ -188,7 +302,22 @@ export const runCommand: CliCommand = {
         validation: validations[i],
       })),
       environment: { node: process.version, platform: process.platform },
+      techniqueCoverage,
     };
+    void suiteOf;
+
+    // Test Plan (ISTQB) — deterministic, persisted alongside reports.
+    let testPlanPath: string | undefined;
+    try {
+      testPlanPath = await generateAndWriteTestPlan({
+        summary,
+        cfg,
+        reportsDir: cfg.reportsDir,
+      });
+      summary.testPlanPath = testPlanPath;
+    } catch (err) {
+      process.stderr.write(`Note: TestPlan generation failed (${(err as Error).message}).\n`);
+    }
 
     const jsonPath = await writeJsonReport(summary, {
       maskKeys: cfg.report.maskKeys,
@@ -198,12 +327,18 @@ export const runCommand: CliCommand = {
       maskKeys: cfg.report.maskKeys,
       reportsDir: cfg.reportsDir,
     });
+    const junitPath = await writeJunitReport(summary, {
+      reportsDir: cfg.reportsDir,
+      suites: suiteGrouping,
+    });
 
     process.stdout.write(
       `\n✓ Run ${runId} finished — total=${totals.total} passed=${totals.passed} failed=${totals.failed} skipped=${totals.skipped}\n`,
     );
-    process.stdout.write(`JSON report: ${jsonPath}\n`);
-    process.stdout.write(`HTML report: ${htmlPath}\n`);
+    process.stdout.write(`JSON report:  ${jsonPath}\n`);
+    process.stdout.write(`HTML report:  ${htmlPath}\n`);
+    process.stdout.write(`JUnit XML:    ${junitPath}\n`);
+    if (testPlanPath) process.stdout.write(`Test Plan:    ${testPlanPath}\n`);
 
     await writeFile(
       path.join(evidenceDir, "run-summary.json"),
@@ -215,6 +350,47 @@ export const runCommand: CliCommand = {
         `Note: DB persistence skipped (${(err as Error).message}).\n`,
       );
     });
+
+    // Persist AI-suggested defects (one row per failed scenario with
+    // suggestedDefect). No-op when the DB is unreachable.
+    let defectsInserted = 0;
+    for (let i = 0; i < scenarios.length; i++) {
+      const sd = validations[i].suggestedDefect;
+      if (!sd || validations[i].status !== "failed") continue;
+      try {
+        await defectsRepo.insert({
+          runId,
+          scenarioId: `${runId}::${scenarios[i].id}`,
+          summary: sd.summary,
+          stepsToReproduce: sd.stepsToReproduce,
+          evidenceLinks: sd.evidenceLinks,
+          severity: sd.severity,
+        });
+        defectsInserted++;
+      } catch {
+        // DB unavailable — fine.
+      }
+    }
+    if (defectsInserted > 0) {
+      process.stdout.write(`Defects:      ${defectsInserted} persisted\n`);
+    }
+
+    // GitHub PR comment (REQ-015) — silent no-op without env vars.
+    const prEnv = readGithubPrEnvFromProcess();
+    if (prEnv) {
+      try {
+        const url = await postPrComment(
+          summary,
+          { htmlReport: htmlPath, junit: junitPath },
+          prEnv,
+        );
+        if (url) process.stdout.write(`PR comment:   ${url}\n`);
+      } catch (err) {
+        process.stderr.write(
+          `Note: PR comment failed (${(err as Error).message}).\n`,
+        );
+      }
+    }
 
     return totals.failed > 0 ? 1 : 0;
   },

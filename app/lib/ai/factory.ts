@@ -11,6 +11,8 @@ export interface BuildProviderOptions {
   config: FrameworkConfig;
   role: string;
   tracePath?: string;
+  /** Hard token budget across all calls on this chain (REQ-017). */
+  tokenBudget?: number;
 }
 
 export function buildProvider(opts: BuildProviderOptions): AiProvider {
@@ -53,5 +55,10 @@ export function buildProvider(opts: BuildProviderOptions): AiProvider {
     }
   }
   if (!chain.length) chain.push(new MockProvider());
-  return makeChainedProvider({ role: opts.role, chain, tracer });
+  return makeChainedProvider({
+    role: opts.role,
+    chain,
+    tracer,
+    tokenBudget: opts.tokenBudget,
+  });
 }

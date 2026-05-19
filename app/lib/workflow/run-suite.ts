@@ -90,7 +90,7 @@ export async function runTestCaseSuite(
       });
     });
 
-    const results = await runScenarios(scenarios, {
+    const outcome = await runScenarios(scenarios, {
       headless: opts.cfg.runner.headless,
       stepTimeoutMs: opts.cfg.runner.stepTimeoutMs,
       navigationTimeoutMs: opts.cfg.runner.navigationTimeoutMs,
@@ -100,6 +100,7 @@ export async function runTestCaseSuite(
         opts.captureScreenshotOnSuccess ?? opts.cfg.runner.captureScreenshotOnSuccess,
       storageStatePath,
     });
+    const results = outcome.results;
     const validations = results.map((result, i) =>
       validateScenarioResult(result, scenarios[i].expectedResult),
     );

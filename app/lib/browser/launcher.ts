@@ -1,4 +1,13 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "@playwright/test";
+import {
+  chromium,
+  firefox,
+  webkit,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
+
+export type BrowserName = "chromium" | "firefox" | "webkit";
 
 export interface LaunchOptions {
   headless?: boolean;
@@ -6,24 +15,40 @@ export interface LaunchOptions {
   navigationTimeoutMs?: number;
   /** Optional storage-state JSON path (login state). */
   storageState?: string;
+  /** Which Playwright browser to launch (REQ-013). Defaults to chromium. */
+  browser?: BrowserName;
+  /** BCP-47 locale tag, e.g. 'en', 'vi', 'ja' (REQ-013). */
+  locale?: string;
 }
 
 export interface BrowserSession {
   browser: Browser;
   context: BrowserContext;
   page: Page;
+  browserName: BrowserName;
+  locale: string | undefined;
   consoleErrors: string[];
   startTrace(outDir: string): Promise<void>;
   stopTrace(file: string): Promise<void>;
   close(): Promise<void>;
 }
 
+const ENGINES = { chromium, firefox, webkit } as const;
+
 export async function launchBrowser(opts: LaunchOptions = {}): Promise<BrowserSession> {
-  const browser = await chromium.launch({ headless: opts.headless ?? true });
-  const context = await browser.newContext({
+  const browserName: BrowserName = opts.browser ?? "chromium";
+  const engine = ENGINES[browserName];
+  const browser = await engine.launch({ headless: opts.headless ?? true });
+  const contextOptions: Parameters<Browser["newContext"]>[0] = {
     viewport: opts.viewport ?? { width: 1280, height: 800 },
     storageState: opts.storageState,
-  });
+  };
+  if (opts.locale) contextOptions.locale = opts.locale;
+  const context = await browser.newContext(contextOptions);
+  if (opts.locale) {
+    await context.setExtraHTTPHeaders({ "accept-language": opts.locale });
+  }
+
   const page = await context.newPage();
   if (opts.navigationTimeoutMs) page.setDefaultNavigationTimeout(opts.navigationTimeoutMs);
 
@@ -37,6 +62,8 @@ export async function launchBrowser(opts: LaunchOptions = {}): Promise<BrowserSe
     browser,
     context,
     page,
+    browserName,
+    locale: opts.locale,
     consoleErrors,
     async startTrace() {
       await context.tracing.start({ screenshots: true, snapshots: true, sources: false });

@@ -142,7 +142,45 @@ transaction as the state mutation.
 
 ---
 
-## 8. Testing the framework itself
+## 8. Universal-web pipeline (SPRINT-004)
+
+```
+ai-test crawl ──► Crawler (BFS, robots, rate-limit, route-pattern collapse)
+                  → reports/sitemaps/{id}.json + DB crawls row
+
+ai-test auth detect ──► detect-login (heuristic) → draft AuthRecipe YAML
+ai-test auth login  ──► execute-auth (Playwright) → storage-state.json (0600)
+
+ai-test run --site-map ──► orchestrate-sitemap iterates pages
+                  per page: PageAnalysis → designScenarios →
+                  runScenarios → validate → aggregate → RunSummary.
+```
+
+## 9. ISTQB & non-functional layer (SPRINT-005)
+
+```
+                            RunSummary
+                               │
+            ┌──────────────────┼──────────────────┐
+            ▼                  ▼                  ▼
+   TestPlan generator    JUnit reporter     HTML reporter
+   (ADR-008)             (suite grouping)   (+technique coverage,
+                                             +level pill)
+
+Per-scenario post-checks (ADR-009):
+   axe-core   ─► accessibilityViolations[]
+   web-vitals ─► webVitals { lcpMs, cls, inpMs, ttfbMs }
+   security   ─► securityChecks[]
+
+Wait strategies (REQ-014):
+   wait_for(strategy: visible | network-idle | mutation-stable | route-change)
+```
+
+ISTQB design techniques (REQ-012): the Test Design Agent loops over
+`requestedTechniques` (CLI `--techniques`, default 7), appends the
+matching prompt addendum, and tags every scenario with its technique.
+
+## 10. Testing the framework itself
 
 - **Vitest unit tests** colocated next to source (`*.test.ts`).
 - **Playwright integration**: the fixture app (`tests/fixtures/sample-app/`)
