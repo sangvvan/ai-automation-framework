@@ -16,6 +16,7 @@ export interface RunOptions {
   viewport: { width: number; height: number };
   evidenceDir: string;
   captureScreenshotOnSuccess?: boolean;
+  storageStatePath?: string;
 }
 
 /**
@@ -45,6 +46,7 @@ async function runOne(
     headless: opts.headless,
     viewport: opts.viewport,
     navigationTimeoutMs: opts.navigationTimeoutMs,
+    storageState: opts.storageStatePath,
   });
 
   const ctx = {

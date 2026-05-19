@@ -140,7 +140,7 @@ export const runCommand: CliCommand = {
                   resolved: true,
                 },
               ],
-              expectedResult: { text: analysis.title },
+              expectedResult: { url: analysis.finalUrl },
               warnings: [],
             },
           ];
@@ -154,6 +154,7 @@ export const runCommand: CliCommand = {
         viewport: cfg.runner.viewport,
         evidenceDir,
         captureScreenshotOnSuccess: cfg.runner.captureScreenshotOnSuccess,
+        storageStatePath: flagString(args, "storage-state"),
       });
       validations = results.map((r, i) =>
         validateScenarioResult(r, scenarios[i].expectedResult),
