@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { loadConfig } from "../../config";
 import { runAuthRecipe } from "../../auth/execute-auth";
 import { discoverSiteMap } from "../../crawler/discover";
@@ -14,6 +15,11 @@ import { runTestCaseSuite } from "../../workflow/run-suite";
 import { flagBool, flagString } from "../args";
 import { formatPreflight, runPreflight } from "../preflight";
 import { BudgetExceededError } from "../../ai/provider";
+import {
+  writeWorkflowAggregate,
+  type RoleRunBrief,
+  type WorkflowAggregate,
+} from "../../reporter/workflow-aggregate";
 import type { CliCommand } from "../commands";
 
 export const workflowCommand: CliCommand = {
@@ -56,10 +62,16 @@ export const workflowCommand: CliCommand = {
     }
     const cfg = loadConfig();
     const projectKey = safePathSegment(input.project);
+    const workflowStartedAt = new Date();
+    const workflowId = `W-${workflowStartedAt
+      .toISOString()
+      .replace(/[^0-9]/g, "")
+      .slice(0, 14)}-${randomBytes(2).toString("hex")}`;
     let hasFailures = false;
     let hasOrchestrationError = false;
+    const roleBriefs: RoleRunBrief[] = [];
 
-    process.stdout.write(`Workflow: ${input.project}\n`);
+    process.stdout.write(`Workflow: ${input.project} (${workflowId})\n`);
 
     for (const role of input.roles) {
       const roleKey = safePathSegment(role.name);
@@ -126,6 +138,7 @@ export const workflowCommand: CliCommand = {
       }
 
       let result;
+      const roleStartedAt = Date.now();
       try {
         result = await runTestCaseSuite({
           cfg,
@@ -152,6 +165,17 @@ export const workflowCommand: CliCommand = {
         }
         throw err;
       }
+      roleBriefs.push({
+        roleName: role.name,
+        runId: result.runId,
+        totals: result.totals,
+        htmlPath: result.htmlPath,
+        junitPath: result.junitPath,
+        testPlanPath: result.testPlanPath,
+        defectsInserted: result.defectsInserted,
+        durationMs: Date.now() - roleStartedAt,
+        prCommentUrl: result.prCommentUrl ?? undefined,
+      });
       process.stdout.write(
         `  run: ${result.runId} total=${result.totals.total} passed=${result.totals.passed} failed=${result.totals.failed}\n`,
       );
@@ -170,6 +194,41 @@ export const workflowCommand: CliCommand = {
         );
       }
       if (result.totals.failed > 0) hasFailures = true;
+    }
+
+    // Cross-role aggregate report — always emit when ≥1 role ran.
+    if (roleBriefs.length > 0) {
+      const agg: WorkflowAggregate = {
+        workflowId,
+        project: input.project,
+        baseUrl: input.baseUrl,
+        startedAt: workflowStartedAt.toISOString(),
+        finishedAt: new Date().toISOString(),
+        roles: roleBriefs,
+        totals: roleBriefs.reduce(
+          (acc, r) => ({
+            total: acc.total + r.totals.total,
+            passed: acc.passed + r.totals.passed,
+            failed: acc.failed + r.totals.failed,
+            skipped: acc.skipped + r.totals.skipped,
+          }),
+          { total: 0, passed: 0, failed: 0, skipped: 0 },
+        ),
+      };
+      try {
+        const { htmlPath, summaryPath } = await writeWorkflowAggregate(agg, {
+          reportsDir: cfg.reportsDir,
+        });
+        process.stdout.write(
+          `\nWorkflow ${workflowId} — ${agg.roles.length} role${
+            agg.roles.length === 1 ? "" : "s"
+          }, totals=${agg.totals.passed}/${agg.totals.total} passed\n`,
+        );
+        process.stdout.write(`  aggregate HTML:    ${htmlPath}\n`);
+        process.stdout.write(`  aggregate JSON:    ${summaryPath}\n`);
+      } catch (err) {
+        process.stderr.write(`  note: aggregate report failed (${(err as Error).message})\n`);
+      }
     }
 
     if (hasOrchestrationError) return 2;
