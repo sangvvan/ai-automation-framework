@@ -244,3 +244,36 @@ npm run ai-test -- baselines accept --run-id R-…
 | `SESSION_SECRET not configured` | Web UI start without `.env` | `cp .env.example .env` then set `SESSION_SECRET` |
 | Auth always 302 | Cookie blocked by host policy | Set `BASE_URL` and run over HTTPS in prod |
 | Reports look stale | Old cached run id | Each run has a fresh id under `reports/` — list and re-open |
+
+---
+
+
+## 10. Full workflow run with sitemap-scoped testcase re-run
+
+This mode is for testers who want one command to run the complete automation
+pipeline:
+
+1. Build sitemap
+2. Generate or map specs
+3. Generate test cases per sitemap node
+4. Compile automation suites from generated test cases
+5. Execute suites and publish re-run pack
+
+```bash
+# Full workflow
+npm run ai-test -- workflow   --url https://app.example.com   --account inputs/auth/app-account.json   --specs ./specs
+
+# Re-run only failed test cases from a previous run
+npm run ai-test -- rerun   --from output/runs/RUN-20260519-001   --failed-only
+```
+
+Expected artifacts:
+- `output/sitemap/sitemap.json`
+- `output/specs/spec.generated.md` (only when `--specs` is omitted)
+- `output/testcases/*.json`
+- `output/tests/generated/*.spec.ts`
+- `output/runs/<run-id>/report.md`
+- `output/rerun/rerun-manifest.json`
+
+See `docs/full-workflow-sitemap-rerun.md` for the detailed contract and
+schemas.
