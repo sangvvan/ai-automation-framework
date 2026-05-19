@@ -5,9 +5,15 @@ import { discoverSiteMap } from "../../crawler/discover";
 import { crawlsRepo } from "../../db/crawls";
 import { CrawlConfig } from "../../validation/sitemap";
 import { generateTestCasesFromSiteMap } from "../../workflow/generate";
-import { readWorkflowInput, safePathSegment } from "../../workflow/config";
+import {
+  readWorkflowInput,
+  safePathSegment,
+  WorkflowConfigError,
+} from "../../workflow/config";
 import { runTestCaseSuite } from "../../workflow/run-suite";
-import { flagString } from "../args";
+import { flagBool, flagString } from "../args";
+import { formatPreflight, runPreflight } from "../preflight";
+import { BudgetExceededError } from "../../ai/provider";
 import type { CliCommand } from "../commands";
 
 export const workflowCommand: CliCommand = {
@@ -17,6 +23,7 @@ export const workflowCommand: CliCommand = {
     example: "ai-test workflow --input inputs/projects/my-app.yaml",
     options: [
       { flag: "--input", description: "Workflow YAML input file (required)" },
+      { flag: "--skip-preflight", description: "Skip P0 environment checks (boolean)" },
     ],
   },
   run: async (args) => {
@@ -26,7 +33,27 @@ export const workflowCommand: CliCommand = {
       return 1;
     }
 
-    const input = await readWorkflowInput(inputPath);
+    // P0 — preflight (env, config, providers, browser, optional DB).
+    if (!flagBool(args, "skip-preflight")) {
+      const preflight = await runPreflight({
+        requireBrowser: true,
+        expectGithubEnv: true,
+        pingDatabase: true,
+      });
+      process.stdout.write(formatPreflight(preflight) + "\n");
+      if (preflight.status === "failed") return preflight.exitCode;
+    }
+
+    let input;
+    try {
+      input = await readWorkflowInput(inputPath);
+    } catch (err) {
+      if (err instanceof WorkflowConfigError) {
+        process.stderr.write(`Workflow config error: ${err.message}\n`);
+        return 2;
+      }
+      throw err;
+    }
     const cfg = loadConfig();
     const projectKey = safePathSegment(input.project);
     let hasFailures = false;
@@ -98,24 +125,33 @@ export const workflowCommand: CliCommand = {
         continue;
       }
 
-      const result = await runTestCaseSuite({
-        cfg,
-        casesDir: generated.casesDir,
-        siteMapPath,
-        storageStatePath,
-        project: input.project,
-        role: role.name,
-        suiteTag: input.run.suiteTag ?? `${projectKey}-${roleKey}`,
-        captureScreenshotOnSuccess: input.run.captureScreenshotOnSuccess,
-        testLevel: input.run.testLevel,
-        browsers: input.run.browsers,
-        locales: input.run.locales.length ? input.run.locales : undefined,
-        nonFunctional: input.run.nonFunctional,
-        junit: input.run.junit,
-        testPlan: input.run.testPlan,
-        persistDefects: input.run.persistDefects,
-        prComment: input.run.prComment,
-      });
+      let result;
+      try {
+        result = await runTestCaseSuite({
+          cfg,
+          casesDir: generated.casesDir,
+          siteMapPath,
+          storageStatePath,
+          project: input.project,
+          role: role.name,
+          suiteTag: input.run.suiteTag ?? `${projectKey}-${roleKey}`,
+          captureScreenshotOnSuccess: input.run.captureScreenshotOnSuccess,
+          testLevel: input.run.testLevel,
+          browsers: input.run.browsers,
+          locales: input.run.locales.length ? input.run.locales : undefined,
+          nonFunctional: input.run.nonFunctional,
+          junit: input.run.junit,
+          testPlan: input.run.testPlan,
+          persistDefects: input.run.persistDefects,
+          prComment: input.run.prComment,
+        });
+      } catch (err) {
+        if (err instanceof BudgetExceededError) {
+          process.stderr.write(`  run halted: AI token budget exceeded (${err.message})\n`);
+          return 4;
+        }
+        throw err;
+      }
       process.stdout.write(
         `  run: ${result.runId} total=${result.totals.total} passed=${result.totals.passed} failed=${result.totals.failed}\n`,
       );

@@ -63,6 +63,7 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
 
   ${diff ? renderDiff(diff) : ""}
   ${renderTechniqueCoverage(summary)}
+  ${renderBrowserLocaleMatrix(summary)}
 
   <section class="list">
     ${rows || '<p class="muted">No scenarios in this run.</p>'}
@@ -187,14 +188,82 @@ function renderTechniqueCoverage(summary: RunSummary): string {
   </section>`;
 }
 
+/**
+ * Render a per-(browser, locale) compatibility matrix.
+ * Collapses to nothing when the run used a single (browser, locale)
+ * combination so vanilla runs don't get a pointless empty table.
+ */
+function renderBrowserLocaleMatrix(summary: RunSummary): string {
+  const browsers = new Set<string>();
+  const locales = new Set<string>();
+  for (const s of summary.scenarios) {
+    browsers.add(s.result.browser ?? "chromium");
+    locales.add(s.result.locale ?? "—");
+  }
+  // Only render when the run actually spans a matrix (>1 browser OR >1 locale).
+  if (browsers.size <= 1 && locales.size <= 1) return "";
+
+  const browserList = [...browsers].sort();
+  const localeList = [...locales].sort();
+
+  // Roll up pass/fail per (browser, locale).
+  type Cell = { total: number; passed: number; failed: number };
+  const matrix = new Map<string, Cell>();
+  for (const s of summary.scenarios) {
+    const key = `${s.result.browser ?? "chromium"}::${s.result.locale ?? "—"}`;
+    const cell = matrix.get(key) ?? { total: 0, passed: 0, failed: 0 };
+    cell.total++;
+    if (s.validation.status === "passed") cell.passed++;
+    else cell.failed++;
+    matrix.set(key, cell);
+  }
+
+  const head =
+    `<tr><th>Browser \\ Locale</th>` +
+    localeList.map((l) => `<th>${escapeHtml(l)}</th>`).join("") +
+    `</tr>`;
+  const body = browserList
+    .map((b) => {
+      const cells = localeList
+        .map((l) => {
+          const c = matrix.get(`${b}::${l}`);
+          if (!c) return `<td class="mx-empty">—</td>`;
+          const pct = c.total ? Math.round((c.passed / c.total) * 100) : 0;
+          const cls = c.failed === 0 ? "mx-ok" : c.passed === 0 ? "mx-ko" : "mx-mix";
+          return `<td class="${cls}" title="${c.passed} passed / ${c.failed} failed">${c.passed}/${c.total} <small>(${pct}%)</small></td>`;
+        })
+        .join("");
+      return `<tr><th>${escapeHtml(b)}</th>${cells}</tr>`;
+    })
+    .join("");
+
+  return `
+  <section class="cov mx">
+    <h2>Browser × locale compatibility</h2>
+    <table>
+      <thead>${head}</thead>
+      <tbody>${body}</tbody>
+    </table>
+  </section>`;
+}
+
 const COV_CSS = `
   .cov{margin:0 24px 12px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 16px}
   .cov h2{margin:0 0 8px;font-size:1rem}
   .cov table{width:100%;border-collapse:collapse;font-size:.9rem}
   .cov th, .cov td{text-align:left;padding:4px 6px;border-bottom:1px dashed #e2e8f0}
   .pill-level{margin-left:4px}
+  .mx .mx-ok{background:#dcfce7;color:#166534}
+  .mx .mx-ko{background:#fee2e2;color:#991b1b}
+  .mx .mx-mix{background:#fef9c3;color:#854d0e}
+  .mx .mx-empty{color:#94a3b8;text-align:center}
+  .mx td, .mx th{text-align:center}
+  .mx th:first-child, .mx td:first-child{text-align:left;font-weight:600}
   @media (prefers-color-scheme: dark){
     .cov{background:#0f172a;border-color:#1e293b}
+    .mx .mx-ok{background:#14532d;color:#bbf7d0}
+    .mx .mx-ko{background:#7f1d1d;color:#fecaca}
+    .mx .mx-mix{background:#713f12;color:#fef3c7}
   }
 `;
 
