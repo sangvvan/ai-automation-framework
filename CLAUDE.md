@@ -1,14 +1,13 @@
-# CLAUDE.md — Web Application SDLC Automation
+# CLAUDE.md — AI Automation Framework
 
 ---
 
 ## Project Configuration
-> **Fill this section in first before running any agent commands.**
 > Agents read this to adapt their instructions, file paths, and patterns.
 
 ```
 # ── Identity ──────────────────────────────────────────────────
-PROJECT_NAME   = My App
+PROJECT_NAME   = AI Automation Framework
 PLATFORM       = web
 
 # ── Tech Stack ────────────────────────────────────────────────
@@ -43,9 +42,10 @@ AI_PROFILE     = balanced
 ---
 
 ## Overview
-This project uses an AI agent team to automate the full software development
-lifecycle for web applications. Agents handle planning, design, implementation,
-testing, and deployment. You provide direction; agents do the work.
+This project is an AI-powered system test automation framework for web
+applications. Testers provide URLs and optional YAML or Markdown test cases;
+the framework analyzes pages, generates or executes scenarios, captures
+evidence, and writes structured reports for review and regression coverage.
 
 ---
 
@@ -132,22 +132,21 @@ codex -a never "fix BUG-001: root-cause in app/routes/login.tsx"
 
 ---
 
-## Tech Stack (fill in per your project config above)
+## Tech Stack
 
 | Layer    | Technology |
 |----------|------------|
-| Frontend | _(from FRAMEWORK setting)_ |
-| Styling  | _(from STYLING setting)_ |
-| Backend  | _(from FRAMEWORK setting)_ |
-| Database | _(from DATABASE setting)_ |
-| Auth     | _(from AUTH setting)_ |
-| Testing  | _(from TESTING setting)_ |
+| Frontend | Remix + React |
+| Styling  | Tailwind CSS |
+| Backend  | Remix actions/loaders + CLI commands |
+| Database | PostgreSQL 15 with raw SQL helpers |
+| Auth     | custom |
+| Testing  | Playwright + Vitest |
 | CI/CD    | GitHub Actions |
 | Container| Docker + docker-compose |
 
-> Agents load `.agent/skills/stacks/{FRAMEWORK}.md` for stack-specific file layout,
-> routing patterns, ORM conventions, and component structure. Update the
-> **Project Configuration** block at the top of this file — do not edit this table manually.
+> Keep the Project Configuration block and this table aligned when the stack
+> changes.
 
 ---
 

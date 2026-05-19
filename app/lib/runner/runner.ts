@@ -46,8 +46,10 @@ export interface RunOptions {
   sensitiveSelectors?: string[];
   /** Non-functional post-checks (REQ-013). */
   nonFunctional?: NonFunctionalOpts;
-  /** Optional storage-state path. */
+  /** Optional storage-state path. Accept both names for compat. */
   storageState?: string;
+  /** Alias for `storageState` (used by workflow subsystem). */
+  storageStatePath?: string;
 }
 
 /**
@@ -87,7 +89,7 @@ async function runOne(
     navigationTimeoutMs: opts.navigationTimeoutMs,
     browser: opts.browser,
     locale: opts.locale,
-    storageState: opts.storageState,
+    storageState: opts.storageState ?? opts.storageStatePath,
   });
 
   if (opts.nonFunctional?.vitals) {

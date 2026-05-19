@@ -5,6 +5,8 @@ node_modules/
 dist/
 build/
 .cache/
+reports/
+tests/generated/
 __pycache__/
 *.pyc
 .DS_Store

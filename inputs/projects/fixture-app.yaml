@@ -1,0 +1,14 @@
+project: fixture-app
+baseUrl: http://127.0.0.1:4710
+roles:
+  - name: anonymous
+crawl:
+  maxPages: 5
+  maxDepth: 2
+  ignoreRobots: true
+generation:
+  maxScenariosPerPage: 3
+  categories: [navigation, positive]
+  fallbackSmoke: true
+run:
+  suiteTag: fixture-app-anonymous

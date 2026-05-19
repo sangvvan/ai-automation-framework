@@ -8,6 +8,7 @@ export interface AnalyzeOptions {
   screenshotPath: string;
   headless?: boolean;
   navigationTimeoutMs?: number;
+  storageStatePath?: string;
 }
 
 /** Heuristic: sensitive input types & name keywords */
@@ -35,6 +36,7 @@ export async function analyzePage(opts: AnalyzeOptions): Promise<PageAnalysis> {
     headless: opts.headless,
     viewport: opts.viewport,
     navigationTimeoutMs: opts.navigationTimeoutMs,
+    storageState: opts.storageStatePath,
   });
 
   try {

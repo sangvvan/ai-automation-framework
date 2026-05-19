@@ -1,167 +1,126 @@
-# Web Application SDLC Template
+# AI Automation Framework
 
-An AI-agent-driven template for building production web applications with a
-two-tool workflow: **Claude Code** handles thinking (planning, design) and
-**Codex CLI** handles execution (implementation, QA, DevOps).
+AI Automation Framework is an AI-assisted system testing tool for web
+applications. It can analyze pages, execute YAML or Markdown test cases,
+generate exploratory scenarios, capture Playwright evidence, and publish
+structured JSON and HTML reports.
 
-```
-Stack = Remix + TypeScript + Tailwind + PostgreSQL (raw SQL)
-      + Playwright + Vitest + Docker + GitHub Actions
-```
+## Stack
 
----
+- Remix, React, TypeScript, and Tailwind CSS for the review web UI.
+- PostgreSQL 15 with raw SQL helpers under `app/lib/db/`.
+- Playwright for browser execution and Vitest for unit/integration tests.
+- Docker and GitHub Actions for local services and CI.
 
-## Setup (5 minutes)
+## Setup
 
 ```bash
-# 1. Install tools
-npm install                          # project dependencies
-npm install -g @openai/codex         # Codex CLI for implementation
-
-# 2. Configure environment
+npm install
+npx playwright install chromium
 cp .env.example .env
-# Edit .env — set DATABASE_URL, SESSION_SECRET (minimum required)
-
-# 3. Start database
 docker compose up -d postgres
-
-# 4. Run migrations
 npm run db:migrate
-
-# 5. Verify everything
-# In Claude Code, run:
-#   /onboard check
 ```
 
----
+Set at minimum `DATABASE_URL` and a 32+ character `SESSION_SECRET` in `.env`.
 
-## Two-tool workflow
+## Run A Test
 
-| Phase | Tool | Command |
-|---|---|---|
-| Write problem statement | You | Edit `docs/requirements/PS-001-template.md` |
-| PS → Requirements | **Claude Code** | `/ps` |
-| REQ → User Stories | **Claude Code** | `/ba` |
-| US → Tasks + Sprints | **Claude Code** | `/planning` |
-| US → Screen specs | **Claude Code** | `/design US-001` |
-| Verify LLM routing | **Claude Code** | _(built into /planning)_ |
-| Implement tasks | **Codex CLI** | `codex -a never "implement TASK-001"` |
-| Write tests | **Codex CLI** | `codex -a never "qa US-001"` |
-| Open PR | **Codex CLI** | `codex -a never "devops — open PR"` |
-
----
-
-## Quickest path: one feature end-to-end
+Execute tester-provided cases:
 
 ```bash
-# 1. Copy and fill the problem statement template
-cp docs/requirements/PS-001-template.md docs/requirements/PS-001.md
-# Edit PS-001.md
-
-# 2. In Claude Code — run thinking phases
-/ps                     # generates REQ-*.md files
-/ba                     # generates US-*.md files
-/planning               # generates TASK-*.md + sprint files
-/design US-001 US-002   # generates design specs for UI stories
-
-# 3. Get all implementation commands at once
-/sprint execute SPRINT-001
-
-# 4. Copy and run each codex command in terminal (in order)
-codex -a never "implement TASK-001 — add engineers table migration"
-codex -a never "implement TASK-002 — ..."
-# ...
-codex -a never "qa US-001 — test engineer directory"
-codex -a never "devops — pre-flight and open PR for feature/sprint-001"
+npm run ai-test -- run \
+  --url https://example.com/login \
+  --test-case tests/fixtures/test-cases/login.yaml \
+  --mode testcase
 ```
 
----
-
-## All Claude Code commands
-
-```
-/onboard [check|ps]     New developer setup and environment check
-/ps [PS-file]           Phase 0 — Problem Statement → Requirements
-/ba [REQ-id]            Phase 1 — Requirements → User Stories
-/planning [REQ-id]      Phase 3 — User Stories → Tasks + Sprints (includes routing check)
-/design US-id [...]     Phase 4 — User Stories → Screen specs
-/feature REQ-id|all     Full thinking pipeline for one or all requirements
-/sprint execute SPRINT-001   Output all Codex commands for a sprint in order
-/sprint status          Sprint progress dashboard
-/sprint report          Velocity + test report
-/sprint retro           Retrospective
-/validate [REQ-id]      Check doc consistency (broken links, missing specs, etc.)
-/status [REQ-id]        Project dashboard
-/fix BUG-001            Analyse bug, output Codex fix command
-/req "description"      Add or version a requirement
-/advisor [TASK-id]      Standalone LLM routing review (optional — /planning includes this)
-```
-
----
-
-## Quality gates
+Generate exploratory scenarios from a URL:
 
 ```bash
-npm run typecheck         # TypeScript strict check
-npm run lint              # ESLint
-npm run test              # Vitest unit + integration
-npm run build             # Remix build
-npm run test:e2e          # Playwright e2e (needs app running)
+npm run ai-test -- run --url https://example.com/login --mode explore
 ```
 
-CI runs all gates on every PR. All must be green before merge.
+Reports are written under `reports/` at runtime and are ignored by git.
 
----
+## Full Workflow
 
-## Project structure
+Create an input file for a target web app and its roles:
 
+```yaml
+# inputs/projects/my-app.yaml
+project: my-app
+baseUrl: https://app.example.com
+roles:
+  - name: admin
+    authRecipe: inputs/auth/admin.yaml
+  - name: viewer
+    authRecipe: inputs/auth/viewer.yaml
+crawl:
+  maxPages: 50
+  maxDepth: 3
+generation:
+  maxScenariosPerPage: 5
+  categories: [positive, negative, validation, navigation]
 ```
+
+Run the complete pipeline:
+
+```bash
+npm run ai-test -- workflow --input inputs/projects/my-app.yaml
+```
+
+The workflow authenticates each role, crawls a role-specific sitemap,
+generates YAML test cases under `tests/generated/{project}/{role}/`, runs the
+generated suite, and writes JSON/HTML reports under `reports/`.
+
+You can also run each stage manually:
+
+```bash
+npm run ai-test -- crawl --url https://app.example.com --storage-state reports/auth/admin.json
+npm run ai-test -- generate --site-map reports/sitemaps/C-...json --project my-app --role admin
+npm run ai-test -- run-suite --cases-dir tests/generated/my-app/admin --site-map reports/sitemaps/C-...json
+```
+
+## Review UI
+
+```bash
+npm run dev
+```
+
+Open `http://localhost:3000/auth/register`, create a user, then review runs at
+`/runs`. Test leads can approve, reject, and promote scenarios into regression
+coverage.
+
+## Project Layout
+
+```text
 app/
-├── routes/              ← Remix flat-routes (kebab-case files)
-├── components/{ui,...}  ← UI components (PascalCase)
-└── lib/
-    ├── config.ts        ← ONLY file that reads process.env
-    ├── db/              ← parameterised SQL helpers (never inline in routes)
-    ← auth/              ← session, OAuth, password
-    ├── storage/         ← S3 helpers
-    └── validation/      ← Zod schemas
-
-db/migrations/           ← YYYYMMDD_description.sql
-
+  routes/          Remix routes for auth, runs, review actions, and admin
+  components/      Feature UI components
+  lib/             AI providers, CLI, crawler, runner, reporter, auth, DB, Zod
+db/
+  migrations/      PostgreSQL schema migrations
+  seeds/           Development seed data
 docs/
-├── requirements/        ← PS-001-template.md + PS-001.md + REQ-{n}.md
-├── user-stories/        ← US-{n}.md
-├── tasks/               ← TASK-{n}.md
-├── decisions/           ← ADR-{n}-{slug}.md
-├── design/screens/{US}/ ← spec.md per screen
-├── sprints/             ← SPRINT-{n}.md + backlog.md
-├── qa/                  ← {US-id}-test-plan.md
-├── bugs/                ← BUG-{n}.md
-└── traceability.md      ← REQ → US → TASK matrix (append-only)
-
+  requirements/    Problem statements and REQ files
+  user-stories/    US files with acceptance criteria
+  tasks/           TASK files linked to implementation work
+  decisions/       Architecture decision records
+  design/          Screen and design-system specs
 tests/
-├── e2e/                 ← Playwright specs (use Page Objects only)
-├── pom/                 ← Page Object Model files
-└── fixtures/            ← seed data for tests
-
-.claude/commands/        ← Claude Code slash commands (source of truth for thinking phases)
-AGENTS.md                ← Codex instructions (auto-read on every codex run)
-CLAUDE.md                ← Full project conventions
+  fixtures/        Fixture app and sample test cases
 ```
 
----
+## Quality Gates
 
-## Key conventions
+```bash
+npm run typecheck
+npm run lint
+npm run test
+npm run build
+npm run test:e2e
+```
 
-- SQL always in `app/lib/db/` — never inline in routes
-- Every route exports `meta()` — SEO mandatory
-- Every action validates with Zod → 422 + fieldErrors on failure
-- Tailwind tokens only — no raw hex/px values
-- Dark variant on every surface, text, border class
-- No `console.log` in committed code
-- `target: cloud` for auth/payment/security — non-negotiable
-- `target: opencode` for schemas, migrations, mock data, docstrings
-
-See `CLAUDE.md` for the full convention contract.  
-See `AGENTS.md` for Codex role instructions.  
-See `.agent/skills/` for technique libraries used by agents.
+Development conventions are captured in `AGENTS.md`, `CLAUDE.md`, and
+`docs/testing-standard.md`.

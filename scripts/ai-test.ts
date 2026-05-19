@@ -8,12 +8,18 @@ import { configShowCommand } from "../app/lib/cli/commands/config";
 import { crawlCommand } from "../app/lib/cli/commands/crawl";
 import { authCommand } from "../app/lib/cli/commands/auth";
 import { baselinesCommand } from "../app/lib/cli/commands/baselines";
+import { generateCommand } from "../app/lib/cli/commands/generate";
+import { runSuiteCommand } from "../app/lib/cli/commands/run-suite";
+import { workflowCommand } from "../app/lib/cli/commands/workflow";
 
 const registry = {
   run: runCommand,
   analyze: analyzeCommand,
   crawl: crawlCommand,
   auth: authCommand,
+  generate: generateCommand,
+  "run-suite": runSuiteCommand,
+  workflow: workflowCommand,
   baselines: baselinesCommand,
   report: reportCommand,
   config: configShowCommand,

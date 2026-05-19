@@ -185,7 +185,7 @@ export const runCommand: CliCommand = {
                   resolved: true,
                 },
               ],
-              expectedResult: { text: analysis.title },
+              expectedResult: { url: analysis.finalUrl },
               warnings: [],
             },
           ];
@@ -207,6 +207,7 @@ export const runCommand: CliCommand = {
         vitals: !!args.flags["vitals"],
         securityHeaders: !!args.flags["security-headers"],
       };
+      const storageStatePath = flagString(args, "storage-state");
 
       const matrixScenarios: ExecutableScenario[] = [];
       const matrixResults: ScenarioResult[] = [];
@@ -228,6 +229,7 @@ export const runCommand: CliCommand = {
             browser,
             locale,
             nonFunctional,
+            storageStatePath,
           });
           matrixScenarios.push(...tagged);
           matrixResults.push(...outcome.results);

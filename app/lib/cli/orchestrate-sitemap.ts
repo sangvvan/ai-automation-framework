@@ -61,6 +61,7 @@ export async function orchestrateSiteMap(
         screenshotPath: path.join(pageDir, "page.png"),
         headless: opts.cfg.runner.headless,
         navigationTimeoutMs: opts.cfg.runner.navigationTimeoutMs,
+        storageStatePath,
       });
 
       let scenarios: ExecutableScenario[] = [];
@@ -81,10 +82,10 @@ export async function orchestrateSiteMap(
           process.stderr.write(
             `Warning [${page.normalizedUrl}]: AI gen unavailable (${(err as Error).message}); using smoke scenario.\n`,
           );
-          scenarios = [smokeScenario(page.normalizedUrl, opts.runId, pageHash, analysis.title)];
+          scenarios = [smokeScenario(page.normalizedUrl, opts.runId, pageHash, analysis.finalUrl)];
         }
       } else {
-        scenarios = [smokeScenario(page.normalizedUrl, opts.runId, pageHash, analysis.title)];
+        scenarios = [smokeScenario(page.normalizedUrl, opts.runId, pageHash, analysis.finalUrl)];
       }
 
       const runOutcome = await runScenarios(scenarios, {
@@ -94,6 +95,7 @@ export async function orchestrateSiteMap(
         viewport: opts.cfg.runner.viewport,
         evidenceDir: pageDir,
         captureScreenshotOnSuccess: opts.cfg.runner.captureScreenshotOnSuccess,
+        storageStatePath,
       });
 
       const validations = runOutcome.results.map((r, i) =>
@@ -115,7 +117,6 @@ export async function orchestrateSiteMap(
     }
   }
 
-  void storageStatePath; // currently consumed by analyzer/runner via config in future iteration
   return bundles;
 }
 
@@ -123,9 +124,9 @@ function smokeScenario(
   url: string,
   runId: string,
   pageHash: string,
-  title: string,
+  expectedUrl: string,
 ): ExecutableScenario {
-  const expectedResult: ExpectedResult = { text: title };
+  const expectedResult: ExpectedResult = { url: expectedUrl };
   return {
     id: `EXPLORE_${runId}_${pageHash}`,
     title: `Open ${url} and verify it loads`,
