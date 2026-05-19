@@ -244,3 +244,76 @@ npm run ai-test -- baselines accept --run-id R-…
 | `SESSION_SECRET not configured` | Web UI start without `.env` | `cp .env.example .env` then set `SESSION_SECRET` |
 | Auth always 302 | Cookie blocked by host policy | Set `BASE_URL` and run over HTTPS in prod |
 | Reports look stale | Old cached run id | Each run has a fresh id under `reports/` — list and re-open |
+
+---
+
+
+## 10. Full pipeline from a single URL (`ai-test quick`)
+
+One command for testers who want the framework to bootstrap everything
+from just a URL (+ optional credentials + optional specs folder), then
+run the complete pipeline:
+
+1. Preflight (env, browser, providers, optional DB)
+2. Auto-detect login form → write `inputs/auth/<project>.yaml` (when
+   `--username` + `--password` supplied)
+3. Copy specs folder → `docs/requirements/` (when `--specs` given)
+   _or_ draft a `PS-AUTO-<project>.md` via AI (when `--auto-specs`)
+4. Write `inputs/projects/<project>.yaml` with sensible defaults
+5. Invoke `ai-test workflow` (crawl → generate → run → report per role)
+6. Emit the aggregate workflow report
+
+```bash
+# Anonymous site, no creds
+npm run ai-test -- quick --url https://app.example.com
+
+# With login (creds are exported as SITE_USERNAME / SITE_PASSWORD)
+npm run ai-test -- quick \
+  --url https://app.example.com \
+  --username "$SITE_USERNAME" \
+  --password "$SITE_PASSWORD"
+
+# Bring your own spec folder for TestPlan traceability
+npm run ai-test -- quick \
+  --url https://app.example.com \
+  --specs ./internal/specs/
+
+# Let AI draft a starter spec (cheap)
+npm run ai-test -- quick \
+  --url https://app.example.com \
+  --auto-specs
+```
+
+Artefacts produced:
+
+| Artefact | Path |
+|---|---|
+| Workflow YAML | `inputs/projects/<project>.yaml` |
+| Auth recipe (when creds given) | `inputs/auth/<project>.yaml` |
+| Spec draft (when `--auto-specs`) | `docs/requirements/PS-AUTO-<project>.md` |
+| SiteMap | `reports/sitemaps/C-<id>.json` |
+| Generated test cases | `tests/generated/<project>/<role>/*.yaml` + `manifest.json` |
+| Per-role reports | `reports/{html,json,junit,test-plans}/<runId>/...` |
+| Per-role evidence | `reports/evidence/<runId>/<scenarioId>/` |
+| Cross-role aggregate | `reports/workflows/W-<id>/index.html` |
+
+### Re-running scenarios
+
+```bash
+# Re-run only failed scenarios from a previous run
+npm run ai-test -- rerun --from R-20260519-… --failed-only
+
+# Re-run a hand-picked list of test case ids
+npm run ai-test -- rerun --testcases TC-LOGIN-003,TC-CHECKOUT-002
+
+# Re-run the curated regression corpus (after Review-UI promotion)
+npm run ai-test -- regression --feature checkout \
+  --browsers chromium,firefox --vitals --a11y
+```
+
+`rerun` reads `reports/json/<runId>.json` directly — the JSON is the
+manifest, no separate file. The new run gets a fresh runId so the
+source run is preserved.
+
+See `docs/full-workflow-sitemap-rerun.md` for the full design contract
+and how it maps to the framework's directory conventions.
