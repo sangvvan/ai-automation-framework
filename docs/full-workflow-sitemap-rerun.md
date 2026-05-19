@@ -67,6 +67,23 @@ output/
     rerun-manifest.json
 ```
 
+> **Conformance note** — the design above is implemented today by the
+> `ai-test` CLI but under the framework's existing directory conventions
+> (no separate `output/` namespace; artefacts live where the rest of
+> the framework can find them). Mapping:
+>
+> | Design contract | Actual location |
+> |---|---|
+> | `output/sitemap/sitemap.json` | `reports/sitemaps/C-<crawlId>.json` (+ `crawls` DB row) |
+> | `output/specs/spec.generated.md` | `docs/requirements/PS-AUTO-<project>.md` (only when `--auto-specs` set and no `--specs` folder) |
+> | `output/testcases/TC-*.json` | `tests/generated/<project>/<role>/*.yaml` (+ `manifest.json`) |
+> | `output/tests/generated/<node>.spec.ts` | Not produced — keywords run from YAML at runtime via `runScenarios`, no `.spec.ts` codegen step. Re-run treats the YAML bundle as the executable artefact. |
+> | `output/runs/<run-id>/results.json` | `reports/json/<runId>.json` |
+> | `output/runs/<run-id>/report.md` | `reports/html/<runId>/index.html` (rich HTML) + `reports/junit/<runId>.xml` |
+> | `output/runs/<run-id>/artifacts/` | `reports/evidence/<runId>/<scenarioId>/` (trace.zip + screenshots + ai-trace.jsonl) |
+> | `output/rerun/rerun-manifest.json` | Not a separate file — `ai-test rerun --from <runId> --failed-only` reads the prior `reports/json/<runId>.json` directly; the JSON itself is the manifest. |
+
+
 ## Suggested JSON schemas
 
 ### `sitemap.json`
@@ -140,21 +157,34 @@ output/
   2. testcase-id list
   3. node-id filter
 
-## CLI proposal
+## CLI (implemented)
 
 ```bash
-# Full run
-npm run framework -- workflow \
+# Full run from a single URL — tool synthesises the workflow YAML +
+# auth recipe + (optionally) a spec doc, then invokes the workflow.
+npm run ai-test -- quick \
   --url https://example.app \
-  --account ./secrets/account.json \
-  --specs ./specs
+  --username "$SITE_USERNAME" --password "$SITE_PASSWORD" \
+  --specs ./specs                  # or --auto-specs to draft via AI
 
-# Re-run failed cases from previous run
-npm run framework -- rerun \
-  --from output/runs/RUN-20260519-001 \
+# Equivalent low-level invocation once inputs/projects/<project>.yaml
+# is written (manually or by quick):
+npm run ai-test -- workflow --input inputs/projects/example.yaml
+
+# Re-run only the scenarios that failed in a previous run.
+npm run ai-test -- rerun \
+  --from R-20260519-... \
   --failed-only
 
-# Re-run specific testcase IDs
-npm run framework -- rerun \
+# Re-run specific test-case IDs.
+npm run ai-test -- rerun \
   --testcases TC-LOGIN-003,TC-CHECKOUT-002
+
+# Re-run the curated regression corpus (after Review-UI promotion).
+npm run ai-test -- regression --feature checkout \
+  --browsers chromium,firefox --vitals --a11y
 ```
+
+The `quick` command is the highest-level entry point (URL → everything);
+`workflow` is the low-level engine; `rerun` and `regression` are the
+two re-execution paths.

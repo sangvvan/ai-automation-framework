@@ -11,9 +11,12 @@ import { baselinesCommand } from "../app/lib/cli/commands/baselines";
 import { generateCommand } from "../app/lib/cli/commands/generate";
 import { runSuiteCommand } from "../app/lib/cli/commands/run-suite";
 import { regressionCommand } from "../app/lib/cli/commands/regression";
+import { rerunCommand } from "../app/lib/cli/commands/rerun";
 import { workflowCommand } from "../app/lib/cli/commands/workflow";
+import { quickCommand } from "../app/lib/cli/commands/quick";
 
 const registry = {
+  quick: quickCommand,
   run: runCommand,
   analyze: analyzeCommand,
   crawl: crawlCommand,
@@ -21,6 +24,7 @@ const registry = {
   generate: generateCommand,
   "run-suite": runSuiteCommand,
   regression: regressionCommand,
+  rerun: rerunCommand,
   workflow: workflowCommand,
   baselines: baselinesCommand,
   report: reportCommand,
