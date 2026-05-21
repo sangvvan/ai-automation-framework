@@ -57,11 +57,12 @@ export class OpenAiCompatibleProvider implements AiProvider {
       headers["authorization"] = `Bearer ${this.opts.apiKey}`;
     }
 
-    const body = {
+    const isReasoningModel =
+      this.opts.model.startsWith("o1") || this.opts.model.startsWith("o3");
+
+    const body: Record<string, any> = {
       model: this.opts.model,
-      max_tokens: input.maxTokens ?? 4096,
       response_format: { type: "json_object" } as const,
-      temperature: 0.2,
       messages: [
         {
           role: "system" as const,
@@ -72,6 +73,13 @@ export class OpenAiCompatibleProvider implements AiProvider {
         { role: "user" as const, content: input.userPrompt },
       ],
     };
+
+    if (isReasoningModel) {
+      body.max_completion_tokens = input.maxTokens ?? 4096;
+    } else {
+      body.max_tokens = input.maxTokens ?? 4096;
+      body.temperature = 0.2;
+    }
 
     try {
       const res = await fetch(`${this.opts.baseUrl.replace(/\/+$/, "")}/chat/completions`, {

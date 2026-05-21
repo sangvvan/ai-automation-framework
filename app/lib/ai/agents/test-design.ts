@@ -57,10 +57,25 @@ Rules:
 1. Output a single JSON object: { "scenarios": [ ... ] }.
 2. Each scenario must have id, title, type (one of: positive, negative,
    required-field, boundary, navigation, ui, error-handling, accessibility,
-   security), priority (P1|P2|P3), steps[], expectedResult.
-3. Every step.action must be one of the documented keywords (open_page,
-   click, fill, select, verify_text, verify_url, wait_for) with the exact
-   field shapes from the schema.
+   security), priority (P1|P2|P3), steps[], expectedResult, and optionally designTechnique
+   (one of: equivalence-partition, boundary-value, decision-table, state-transition,
+   use-case, pairwise, error-guessing, exploratory-charter).
+3. Every step in steps[] MUST BE AN OBJECT with "description" (string) and "action" (object).
+   The "description" string MUST strictly use one of these phrasing templates:
+   - "open <url>"
+   - "click <name>"
+   - "enter <value> in <field>"
+   - "select <value> from <field>"
+   - "verify text <text>"
+   - "check url <pattern>"
+   The "action" object MUST match this schema:
+   {"keyword": "click", "target": {"kind": "role", "role": "button", "name": "Submit"}}
+   or {"keyword": "fill", "target": {"kind": "label", "text": "Email"}, "value": "test@example.com"}
+   or {"keyword": "open_page", "url": "..."}
+   or {"keyword": "verify_url", "url": "..."}
+   or {"keyword": "verify_text", "text": "Success"}
+   expectedResult MUST BE AN OBJECT matching:
+   {"type": "page_url", "url": "..."} OR {"type": "element_visible", "locator": {...}} OR {"type": "text_present", "text": "..."}
 4. Every locator referenced in steps must correspond to an element present
    in the supplied PageAnalysis. Prefer role+name; fall back to label.
 5. Use ONLY synthetic placeholder values for fills (e.g. test-user@example.com,

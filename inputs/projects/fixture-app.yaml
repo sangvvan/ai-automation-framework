@@ -1,7 +1,7 @@
 project: fixture-app
 baseUrl: http://127.0.0.1:4710
 roles:
-  - name: anonymous
+  - name: admin
 crawl:
   maxPages: 5
   maxDepth: 2

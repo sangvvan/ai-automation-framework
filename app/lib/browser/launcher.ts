@@ -36,7 +36,7 @@ export interface BrowserSession {
 const ENGINES = { chromium, firefox, webkit } as const;
 
 export async function launchBrowser(opts: LaunchOptions = {}): Promise<BrowserSession> {
-  const browserName: BrowserName = opts.browser ?? "chromium";
+  const browserName: BrowserName = opts.browser ?? (process.env.PLAYWRIGHT_BROWSER as BrowserName) ?? "chromium";
   const engine = ENGINES[browserName];
   const browser = await engine.launch({ headless: opts.headless ?? true });
   const contextOptions: Parameters<Browser["newContext"]>[0] = {

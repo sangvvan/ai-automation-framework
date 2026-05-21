@@ -137,6 +137,12 @@ function checkAiProviders(cfg: FrameworkConfig): PreflightCheck[] {
         status: "warn",
         detail: `Enabled but CODEX_API_KEY not set; chain will fall through`,
       });
+    } else if (name === "gemini" && !process.env.GEMINI_API_KEY) {
+      out.push({
+        name: `provider:${name}`,
+        status: "warn",
+        detail: `Enabled but GEMINI_API_KEY not set; chain will fall through`,
+      });
     } else {
       out.push({ name: `provider:${name}`, status: "passed" });
     }
@@ -157,6 +163,7 @@ function checkPlaywrightBrowser(strict: boolean): PreflightCheck {
       ]
     : ([
         process.env.HOME && path.join(process.env.HOME, ".cache/ms-playwright"),
+        process.env.HOME && path.join(process.env.HOME, "Library/Caches/ms-playwright"),
         "/opt/pw-browsers",
       ].filter(Boolean) as string[]);
   const found = candidates.find((p) => existsSync(p));

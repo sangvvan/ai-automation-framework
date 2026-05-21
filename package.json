@@ -13,7 +13,7 @@
     "start": "remix-serve ./build/server/index.js",
     "typecheck": "tsc",
     "db:migrate": "node --experimental-strip-types scripts/migrate.ts",
-    "ai-test": "tsx scripts/ai-test.ts",
+    "ai-test": "vite-node scripts/ai-test.ts",
     "fixture:serve": "node tests/fixtures/sample-app/server.mjs",
     "test": "vitest run",
     "test:framework-system": "vitest run --config vitest.system.config.ts",

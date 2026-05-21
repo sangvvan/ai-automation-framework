@@ -104,7 +104,7 @@ function invokeWorkflow(yamlPath: string, env: NodeJS.ProcessEnv): Promise<numbe
   return new Promise((resolve) => {
     const child = spawn(
       "npx",
-      ["tsx", path.resolve("scripts/ai-test.ts"), "workflow", "--input", yamlPath],
+      ["vite-node", path.resolve("scripts/ai-test.ts"), "workflow", "--input", yamlPath],
       {
         env,
         stdio: "inherit",

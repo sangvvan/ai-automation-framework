@@ -1,8 +1,9 @@
-import type { FrameworkConfig } from "../config";
+import { FrameworkConfig, getEnv } from "../config";
 import { ClaudeProvider } from "./providers/claude";
 import { CodexProvider } from "./providers/codex";
 import { OpencodeProvider } from "./providers/opencode";
 import { MockProvider } from "./providers/mock";
+import { OpenAiCompatibleProvider } from "./providers/openai-compatible";
 import type { AiProvider } from "./provider";
 import { makeChainedProvider } from "./resolve";
 import { fileTracer, noopTracer, type Tracer } from "./trace";
@@ -28,6 +29,18 @@ export function buildProvider(opts: BuildProviderOptions): AiProvider {
       case "claude":
         chain.push(
           new ClaudeProvider({ model: spec?.model, timeoutMs: spec?.timeoutMs }),
+        );
+        break;
+      case "gemini":
+        chain.push(
+          new OpenAiCompatibleProvider({
+            name: "gemini",
+            baseUrl: spec?.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta/openai/",
+            apiKey: getEnv().GEMINI_API_KEY,
+            model: spec?.model ?? "gemini-1.5-pro",
+            timeoutMs: spec?.timeoutMs ?? 60000,
+            authStyle: "bearer",
+          }),
         );
         break;
       case "codex":

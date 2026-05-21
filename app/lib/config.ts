@@ -26,6 +26,7 @@ const EnvSchema = z.object({
   CLAUDE_API_KEY: z.string().optional(),
   CODEX_API_KEY: z.string().optional(),
   OPENCODE_API_URL: z.string().optional(),
+  GEMINI_API_KEY: z.string().optional(),
 });
 
 let _env: z.infer<typeof EnvSchema> | null = null;
@@ -75,6 +76,7 @@ export const TestEnvConfig = z.object({
 export const ProviderName = z.enum([
   "claude",
   "codex",
+  "gemini",
   "opencode",
   "opencode-ollama",
   "mock",
