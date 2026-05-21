@@ -17,11 +17,11 @@ export async function writeHtmlReport(
   const outDir = path.join(opts.reportsDir, "html", summary.runId);
   await mkdir(outDir, { recursive: true });
   const outPath = path.join(outDir, "index.html");
-  await writeFile(outPath, renderHtml(masked, opts.previousSummary));
+  await writeFile(outPath, renderHtml(masked, opts.previousSummary, outDir));
   return outPath;
 }
 
-export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
+export function renderHtml(summary: RunSummary, previous?: RunSummary, outDir?: string): string {
   const t = summary.totals;
   const passPct = t.total ? Math.round((t.passed / t.total) * 100) : 0;
   const failPct = t.total ? Math.round((t.failed / t.total) * 100) : 0;
@@ -30,7 +30,7 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
   const diff = previous ? computeDiff(summary, previous) : null;
 
   const rows = summary.scenarios
-    .map((s, i) => renderRow(i, s))
+    .map((s, i) => renderRow(i, s, outDir))
     .join("\n");
 
   // Generate SVG Donut segments mathematically
@@ -83,7 +83,7 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
         </div>
       </div>
       <div class="time-meta">
-        <svg class="icon-clock" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm4.2 14.2L11 13V7h1.5v5.2l4.5 2.7-.8 1.3z"/></svg>
+        <svg class="icon-clock" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm16.2 14.2L11 13V7h1.5v5.2l4.5 2.7-.8 1.3z"/></svg>
         <span>${escapeHtml(summary.startedAt.split(".")[0].replace("T", " "))}</span>
       </div>
     </div>
@@ -127,9 +127,24 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
 
     <!-- Scenario Execution Flow -->
     <section class="scenarios-section">
-      <div class="section-header">
+      <div class="section-header-row">
         <h2>Test Scenarios</h2>
+        
+        <div class="scenarios-toolbar">
+          <div class="toolbar-left">
+            <button class="btn btn-secondary" onclick="expandAll(true)">Expand All</button>
+            <button class="btn btn-secondary" onclick="expandAll(false)">Collapse All</button>
+          </div>
+          <div class="toolbar-right">
+            <span class="toolbar-lbl">Filter:</span>
+            <button class="btn btn-filter active" data-filter="all" onclick="filterScenarios('all')">All (${t.total})</button>
+            <button class="btn btn-filter" data-filter="passed" onclick="filterScenarios('passed')">Passed (${t.passed})</button>
+            <button class="btn btn-filter" data-filter="failed" onclick="filterScenarios('failed')">Failed (${t.failed})</button>
+            ${t.skipped > 0 ? `<button class="btn btn-filter" data-filter="skipped" onclick="filterScenarios('skipped')">Skipped (${t.skipped})</button>` : ""}
+          </div>
+        </div>
       </div>
+      
       <div class="list">
         ${rows || '<p class="muted">No scenarios in this run.</p>'}
       </div>
@@ -142,6 +157,69 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
       <span class="muted">Node: ${escapeHtml(summary.environment.node ?? "Unknown")}</span>
     </div>
   </footer>
+
+  <!-- Glassmorphic Lightbox Modal -->
+  <div id="image-modal" class="modal" onclick="closeModal()">
+    <span class="close" onclick="closeModal()">&times;</span>
+    <div class="modal-wrapper" onclick="event.stopPropagation()">
+      <img class="modal-content" id="modal-img" src="" alt="Screenshot Preview">
+      <div id="caption"></div>
+    </div>
+  </div>
+
+  <script>
+    function expandAll(isOpen) {
+      const details = document.querySelectorAll('details.scenario');
+      details.forEach(d => {
+        d.open = isOpen;
+      });
+    }
+
+    function filterScenarios(status) {
+      const buttons = document.querySelectorAll('.btn-filter');
+      buttons.forEach(b => {
+        if (b.getAttribute('data-filter') === status) {
+          b.classList.add('active');
+        } else {
+          b.classList.remove('active');
+        }
+      });
+
+      const scenarios = document.querySelectorAll('details.scenario');
+      scenarios.forEach(s => {
+        if (status === 'all') {
+          s.style.display = 'block';
+        } else {
+          if (s.classList.contains(status)) {
+            s.style.display = 'block';
+          } else {
+            s.style.display = 'none';
+          }
+        }
+      });
+    }
+
+    function openModal(imgSrc, captionText) {
+      const modal = document.getElementById("image-modal");
+      const modalImg = document.getElementById("modal-img");
+      const caption = document.getElementById("caption");
+      modalImg.src = imgSrc;
+      caption.textContent = captionText;
+      modal.classList.add("show");
+    }
+
+    function closeModal() {
+      const modal = document.getElementById("image-modal");
+      modal.classList.remove("show");
+    }
+
+    // Close modal on Escape key
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape') {
+        closeModal();
+      }
+    });
+  </script>
 </body>
 </html>
 `;
@@ -150,6 +228,7 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary): string {
 function renderRow(
   i: number,
   s: RunSummary["scenarios"][number],
+  outDir?: string,
 ): string {
   const status = s.validation.status;
   const cls = status === "passed" ? "ok" : "ko";
@@ -163,7 +242,8 @@ function renderRow(
           <span class="step-i">#${st.index + 1}</span>
           <span class="step-d">${escapeHtml(s.scenario.steps[st.index]?.description ?? "")}</span>
           ${st.reason ? `<span class="step-r"><svg viewBox="0 0 24 24" class="icon-warning"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>${escapeHtml(st.reason)}</span>` : ""}
-          ${st.screenshotPath ? `<a class="evi" target="_blank" href="${escapeAttr(relative(st.screenshotPath))}">
+          ${st.screenshotPath ? `
+          <a class="evi" target="_blank" href="${escapeAttr(relative(st.screenshotPath, outDir))}" onclick="event.preventDefault(); openModal(this.href, 'Screenshot - Step #${st.index + 1}: ${escapeAttr(s.scenario.steps[st.index]?.description ?? '')}')">
             <svg viewBox="0 0 24 24" class="icon-img"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>Screenshot
           </a>` : ""}
         </li>`;
@@ -172,16 +252,19 @@ function renderRow(
     .join("");
 
   const evidence = [
-    s.result.screenshotPath ? `<a class="btn-evidence" target="_blank" href="${escapeAttr(relative(s.result.screenshotPath))}"><svg viewBox="0 0 24 24" class="icon-inline"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>Final Screenshot</a>` : null,
-    s.result.tracePath ? `<a class="btn-evidence" href="${escapeAttr(relative(s.result.tracePath))}"><svg viewBox="0 0 24 24" class="icon-inline"><path fill="currentColor" d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45-1-1-1s-1-.45-1-1V6H10v9c0 1.66 1.34 3 3 3s3-1.34 3-3V5c0-2.21-1.79-4-4-4S8 2.79 8 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>Trace File</a>` : null,
+    s.result.screenshotPath ? `<a class="btn-evidence" target="_blank" href="${escapeAttr(relative(s.result.screenshotPath, outDir))}" onclick="event.preventDefault(); openModal(this.href, 'Final Execution Screenshot')"><svg viewBox="0 0 24 24" class="icon-inline"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>Final Screenshot</a>` : null,
+    s.result.tracePath ? `<a class="btn-evidence" href="${escapeAttr(relative(s.result.tracePath, outDir))}"><svg viewBox="0 0 24 24" class="icon-inline"><path fill="currentColor" d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45-1-1-1s-1-.45-1-1V6H10v9c0 1.66 1.34 3 3 3s3-1.34 3-3V5c0-2.21-1.79-4-4-4S8 2.79 8 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>Trace File</a>` : null,
   ]
     .filter(Boolean)
     .join(" ");
 
+  const expectedVsObservedHtml = renderExpectedVsObserved(s);
+
   return `
-  <details class="scenario ${cls}" ${status === "failed" ? "open" : ""}>
+  <details class="scenario ${status} ${cls}" ${status === "failed" ? "open" : ""}>
     <summary>
       <div class="summary-left">
+        <svg viewBox="0 0 24 24" class="icon-chevron"><path fill="currentColor" d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>
         <span class="status-pill ${cls}">${escapeHtml(status)}</span>
         <span class="title">${escapeHtml(s.scenario.title)}</span>
       </div>
@@ -193,11 +276,82 @@ function renderRow(
     </summary>
     <div class="scenario-details">
       ${s.validation.failureReason ? `<blockquote class="why"><strong>Error Detail:</strong> ${escapeHtml(s.validation.failureReason)}</blockquote>` : ""}
+      
+      <!-- Clear Expected vs Observed Section -->
+      ${expectedVsObservedHtml}
+
+      <h4 class="details-section-title">Workflow Steps</h4>
       <ol class="steps">${steps}</ol>
       ${evidence ? `<div class="evidence">${evidence}</div>` : ""}
       ${s.validation.suggestedDefect ? renderDefect(s.validation.suggestedDefect) : ""}
     </div>
   </details>`;
+}
+
+function renderExpectedVsObserved(s: RunSummary["scenarios"][number]): string {
+  if (s.validation.status !== "failed") return "";
+
+  const expectedList: string[] = [];
+  const observedList: string[] = [];
+
+  // Parse each check
+  for (const c of s.validation.checks) {
+    if (c.status !== "failed" && c.status !== "warn") continue;
+
+    if (c.name === "url") {
+      expectedList.push(`URL should contain: <code>${escapeHtml(s.scenario.expectedResult.url)}</code>`);
+      observedList.push(`URL was: <code>${escapeHtml(s.result.finalUrl ?? "unknown")}</code>`);
+    } else if (c.name === "text") {
+      expectedList.push(`Page should contain text: <strong>"${escapeHtml(s.scenario.expectedResult.text)}"</strong>`);
+      observedList.push(`Text was not found on the page.<br/><small class="text-mute">Final page text preview: "${escapeHtml(truncate(s.result.finalText ?? "", 150))}"</small>`);
+    } else if (c.name === "execution") {
+      const failedStep = s.result.steps.find((st) => st.status === "failed");
+      if (failedStep) {
+        const stepDesc = s.scenario.steps[failedStep.index]?.description ?? "Step " + (failedStep.index + 1);
+        expectedList.push(`Step #${failedStep.index + 1} ("${escapeHtml(stepDesc)}") executes successfully.`);
+        observedList.push(`Step execution failed at step #${failedStep.index + 1} with error:<br/><code class="err-msg">${escapeHtml(failedStep.reason ?? "Unknown runner error")}</code>`);
+      } else {
+        expectedList.push(`All workflow steps should complete without errors.`);
+        observedList.push(`Execution interrupted/skipped: <code class="err-msg">${escapeHtml(c.detail ?? "Scenario did not complete")}</code>`);
+      }
+    } else {
+      // Fallback/Generic check
+      expectedList.push(`Check <strong>${escapeHtml(c.name)}</strong> should pass.`);
+      observedList.push(`Check failed: <code class="err-msg">${escapeHtml(c.detail ?? "No failure detail provided")}</code>`);
+    }
+  }
+
+  // If there are no failed checks but validation status is failed
+  if (expectedList.length === 0) {
+    expectedList.push(`Scenario validation checks should all pass.`);
+    observedList.push(`Validation failed with reason: <code class="err-msg">${escapeHtml(s.validation.failureReason ?? "Unknown validation failure")}</code>`);
+  }
+
+  const expectedHtml = expectedList.map(item => `<li>${item}</li>`).join("");
+  const observedHtml = observedList.map(item => `<li>${item}</li>`).join("");
+
+  return `
+    <div class="exp-obs-container">
+      <div class="exp-obs-box exp-box">
+        <div class="exp-obs-title exp">
+          <svg viewBox="0 0 24 24" class="icon-inline"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+          Expected Result
+        </div>
+        <ul class="exp-obs-list">${expectedHtml}</ul>
+      </div>
+      <div class="exp-obs-box obs-box">
+        <div class="exp-obs-title obs">
+          <svg viewBox="0 0 24 24" class="icon-inline"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h2v-2-h-2v2zm0-4h2V7h-2v6z"/></svg>
+          Observed / Actual Result
+        </div>
+        <ul class="exp-obs-list">${observedHtml}</ul>
+      </div>
+    </div>
+  `;
+}
+
+function truncate(s: string, n = 200): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
 function renderDefect(d: NonNullable<RunSummary["scenarios"][number]["validation"]["suggestedDefect"]>): string {
@@ -358,14 +512,17 @@ const CSS = `
     --color-text: #0f172a;
     --color-text-muted: #64748b;
     --color-ok: #10b981;
-    --color-ok-bg: #dcfce7;
-    --color-ok-text: #15803d;
-    --color-ko: #f43f5e;
-    --color-ko-bg: #ffe4e6;
-    --color-ko-text: #be123c;
+    --color-ok-bg: #e6f4ea;
+    --color-ok-text: #137333;
+    --color-ko: #ef4444;
+    --color-ko-bg: #fce8e6;
+    --color-ko-text: #c5221f;
     --color-sk: #64748b;
     --color-sk-bg: #f1f5f9;
     --color-sk-text: #475569;
+    --color-info: #3b82f6;
+    --color-info-bg: #e8f0fe;
+    --color-info-text: #1a73e8;
     --border-color: #e2e8f0;
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
@@ -375,19 +532,22 @@ const CSS = `
 
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg-app: #030712;
-      --bg-card: #0b0f19;
+      --bg-app: #090d16;
+      --bg-card: #111827;
       --color-text: #f3f4f6;
       --color-text-muted: #9ca3af;
-      --color-ok: #10b981;
-      --color-ok-bg: rgba(16, 185, 129, 0.15);
+      --color-ok: #34d399;
+      --color-ok-bg: rgba(52, 211, 153, 0.1);
       --color-ok-text: #34d399;
-      --color-ko: #f43f5e;
-      --color-ko-bg: rgba(244, 63, 94, 0.15);
-      --color-ko-text: #fb7185;
-      --color-sk: #6b7280;
-      --color-sk-bg: rgba(107, 114, 128, 0.1);
-      --color-sk-text: #9ca3af;
+      --color-ko: #f87171;
+      --color-ko-bg: rgba(248, 113, 113, 0.1);
+      --color-ko-text: #f87171;
+      --color-sk: #9ca3af;
+      --color-sk-bg: rgba(156, 163, 175, 0.1);
+      --color-sk-text: #e5e7eb;
+      --color-info: #60a5fa;
+      --color-info-bg: rgba(96, 165, 250, 0.1);
+      --color-info-text: #60a5fa;
       --border-color: #1f2937;
     }
   }
@@ -403,15 +563,19 @@ const CSS = `
 
   /* Header styles */
   .hdr {
-    background-color: var(--bg-card);
+    background-color: rgba(255, 255, 255, 0.85);
     border-bottom: 1px solid var(--border-color);
     position: sticky;
     top: 0;
     z-index: 100;
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    background-opacity: 0.95;
     padding: 16px 32px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .hdr {
+      background-color: rgba(17, 24, 39, 0.85);
+    }
   }
   .hdr-content {
     max-width: 1280px;
@@ -742,12 +906,75 @@ const CSS = `
   .scenarios-section {
     margin-top: 32px;
   }
-  .section-header h2 {
+  .section-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .section-header-row h2 {
     font-size: 1.25rem;
     font-weight: 700;
     letter-spacing: -0.025em;
-    margin-bottom: 16px;
   }
+
+  /* Scenarios Toolbar */
+  .scenarios-toolbar {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .toolbar-left, .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .toolbar-lbl {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .btn {
+    font-family: var(--font-family);
+    font-size: 0.825rem;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-card);
+    color: var(--color-text);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+  }
+  .btn:hover {
+    background-color: var(--color-sk-bg);
+    border-color: var(--color-text-muted);
+  }
+  .btn:active {
+    transform: scale(0.98);
+  }
+  .btn.active {
+    background-color: var(--color-info-bg);
+    color: var(--color-info-text);
+    border-color: var(--color-info);
+  }
+  .btn-filter[data-filter="passed"].active {
+    background-color: var(--color-ok-bg);
+    color: var(--color-ok-text);
+    border-color: var(--color-ok);
+  }
+  .btn-filter[data-filter="failed"].active {
+    background-color: var(--color-ko-bg);
+    color: var(--color-ko-text);
+    border-color: var(--color-ko);
+  }
+
   .scenario {
     background-color: var(--bg-card);
     border: 1px solid var(--border-color);
@@ -771,10 +998,13 @@ const CSS = `
     align-items: center;
     gap: 12px;
     user-select: none;
+    outline: none;
+    list-style: none; /* Hide default triangle */
   }
   .scenario summary::-webkit-details-marker {
-    display: none;
+    display: none; /* Hide default triangle in Safari */
   }
+  
   .summary-left {
     display: flex;
     align-items: center;
@@ -813,8 +1043,21 @@ const CSS = `
     font-weight: 600;
   }
 
+  .icon-chevron {
+    width: 20px;
+    height: 20px;
+    color: var(--color-text-muted);
+    transition: transform 0.2s ease;
+  }
+  .scenario[open] .icon-chevron {
+    transform: rotate(90deg);
+  }
+  .scenario[open] {
+    box-shadow: var(--shadow-lg);
+  }
+
   .scenario-details {
-    padding: 0 24px 24px;
+    padding: 24px;
     border-top: 1px solid var(--border-color);
     background-color: var(--bg-app);
   }
@@ -823,14 +1066,23 @@ const CSS = `
     color: var(--color-ko-text);
     padding: 12px 16px;
     border-radius: 8px;
-    margin: 16px 0;
+    margin-bottom: 20px;
     border-left: 4px solid var(--color-ko);
     font-size: 0.875rem;
   }
   
+  .details-section-title {
+    font-size: 0.875rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+    margin-top: 24px;
+    margin-bottom: 10px;
+  }
+
   .steps {
     list-style: none;
-    margin-top: 16px;
     background-color: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -904,6 +1156,8 @@ const CSS = `
     padding: 2px 8px;
     border-radius: 4px;
     transition: background-color 0.2s ease;
+    border: none;
+    cursor: pointer;
   }
   .evi:hover {
     background-color: rgba(2, 132, 199, 0.15);
@@ -928,6 +1182,7 @@ const CSS = `
     font-weight: 600;
     box-shadow: var(--shadow-sm);
     transition: background-color 0.2s ease, transform 0.1s ease;
+    cursor: pointer;
   }
   .btn-evidence:hover {
     background-color: var(--color-sk-bg);
@@ -938,11 +1193,12 @@ const CSS = `
   .icon-inline {
     width: 14px;
     height: 14px;
+    flex-shrink: 0;
   }
 
   /* Defect box */
   .defect {
-    margin-top: 16px;
+    margin-top: 24px;
     padding: 16px;
     border: 1px dashed var(--color-ko-text);
     border-radius: 8px;
@@ -979,6 +1235,168 @@ const CSS = `
     color: var(--color-text-muted);
   }
 
+  /* Expected vs Observed Layout styles */
+  .exp-obs-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 768px) {
+    .exp-obs-container {
+      grid-template-columns: 1fr;
+    }
+  }
+  .exp-obs-box {
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid var(--border-color);
+  }
+  .exp-obs-box.exp-box {
+    background-color: var(--color-info-bg);
+    border-left: 4px solid var(--color-info);
+  }
+  .exp-obs-box.obs-box {
+    background-color: var(--color-ko-bg);
+    border-left: 4px solid var(--color-ko);
+  }
+  .exp-obs-title {
+    font-size: 0.9rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .exp-obs-title.exp {
+    color: var(--color-info-text);
+  }
+  .exp-obs-title.obs {
+    color: var(--color-ko-text);
+  }
+  .exp-obs-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 0.875rem;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .exp-obs-list li {
+    position: relative;
+    padding-left: 18px;
+    line-height: 1.5;
+  }
+  .exp-obs-list li::before {
+    content: "•";
+    position: absolute;
+    left: 4px;
+    color: var(--color-text-muted);
+    font-weight: bold;
+  }
+  .exp-box .exp-obs-list li::before {
+    color: var(--color-info-text);
+  }
+  .obs-box .exp-obs-list li::before {
+    color: var(--color-ko-text);
+  }
+  .exp-obs-list code {
+    font-family: monospace;
+    background-color: rgba(0, 0, 0, 0.05);
+    padding: 2px 4px;
+    border-radius: 4px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .exp-obs-list code {
+      background-color: rgba(255, 255, 255, 0.1);
+    }
+  }
+  .err-msg {
+    color: var(--color-ko-text);
+    font-weight: 600;
+    word-break: break-all;
+  }
+  .text-mute {
+    color: var(--color-text-muted);
+  }
+
+  /* Glassmorphic Lightbox Modal styles */
+  .modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: rgba(15, 23, 42, 0.85); /* Slate-900 with high opacity */
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    opacity: 0;
+    transition: opacity 0.25s ease-out;
+  }
+  .modal.show {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 1;
+  }
+  .modal-wrapper {
+    position: relative;
+    max-width: 90%;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .modal-content {
+    display: block;
+    max-width: 100%;
+    max-height: 75vh;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transform: scale(0.95);
+    transition: transform 0.25s ease-out;
+  }
+  .modal.show .modal-content {
+    transform: scale(1);
+  }
+  .modal .close {
+    position: absolute;
+    top: 24px;
+    right: 24px;
+    color: #f1f5f9;
+    font-size: 32px;
+    font-weight: 700;
+    transition: color 0.2s;
+    cursor: pointer;
+    z-index: 1010;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+  .modal .close:hover {
+    color: var(--color-ko);
+    background-color: rgba(255, 255, 255, 0.2);
+  }
+  #caption {
+    margin-top: 14px;
+    text-align: center;
+    color: #cbd5e1;
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+    padding: 0 16px;
+  }
+
   /* Footer */
   .ftr {
     margin-top: 64px;
@@ -1011,11 +1429,14 @@ function escapeAttr(s: string): string {
   return escapeHtml(s);
 }
 
-function relative(p: string): string {
+function relative(p: string, outDir?: string): string {
+  if (!p) return "";
+  if (outDir && p.startsWith("/")) {
+    return path.relative(outDir, p);
+  }
   if (p.startsWith("/")) {
     const cwd = process.cwd();
     if (p.startsWith(cwd)) return path.relative(process.cwd(), p);
   }
   return p;
 }
-
