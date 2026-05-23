@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS scenarios (
   validation      jsonb NOT NULL,
   review_status   text NOT NULL DEFAULT 'pending_review'
                    CHECK (review_status IN ('pending_review','approved','rejected')),
-  reviewed_by     uuid REFERENCES users(id),
+  reviewed_by     uuid,
   reviewed_at     timestamptz,
   reject_reason   text,
   in_regression   boolean NOT NULL DEFAULT false,

@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS crawls (
   sitemap_path    text NOT NULL,
   ignore_robots   boolean NOT NULL DEFAULT false,
   include_subdomains boolean NOT NULL DEFAULT false,
-  actor_id        uuid REFERENCES users(id)
+  actor_id        uuid
 );
 
 CREATE INDEX IF NOT EXISTS idx_crawls_started_at ON crawls(started_at DESC);

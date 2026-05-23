@@ -1,18 +1,16 @@
-import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
 export default defineConfig({
-  plugins: [react(), tsconfigPaths()],
+  plugins: [tsconfigPaths()],
   test: {
-    environment: 'happy-dom',
+    environment: 'node',
     globals: true,
-    setupFiles: ['./app/test/setup.ts'],
-    include: ['app/**/*.test.ts', 'app/**/*.test.tsx'],
+    include: ['lib/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['app/**/*.{ts,tsx}'],
-      exclude: ['**/*.js', 'app/lib/auth/session.ts'],
+      include: ['lib/**/*.ts'],
+      exclude: ['**/*.js'],
       thresholds: {
         lines: 80,
         functions: 80,

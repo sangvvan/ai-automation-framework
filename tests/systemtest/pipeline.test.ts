@@ -22,23 +22,23 @@ import path from "node:path";
 import http from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { discoverSiteMap } from "../../app/lib/crawler/discover";
-import { parseTestCaseFile } from "../../app/lib/scenario/parse";
-import { mapStepsToActions } from "../../app/lib/scenario/step-mapper";
-import { analyzePage } from "../../app/lib/analyzer/analyze";
-import { runScenarios } from "../../app/lib/runner/runner";
-import { validateScenarioResult } from "../../app/lib/validator/validate";
-import { writeJsonReport } from "../../app/lib/reporter/json";
-import { writeHtmlReport } from "../../app/lib/reporter/html";
-import { writeJunitReport } from "../../app/lib/reporter/junit";
-import { generateAndWriteTestPlan } from "../../app/lib/reporter/test-plan-generator";
-import { assembleSuites } from "../../app/lib/review/suite-assembler";
+import { discoverSiteMap } from "../../lib/crawler/discover";
+import { parseTestCaseFile } from "../../lib/scenario/parse";
+import { mapStepsToActions } from "../../lib/scenario/step-mapper";
+import { analyzePage } from "../../lib/analyzer/analyze";
+import { runScenarios } from "../../lib/runner/runner";
+import { validateScenarioResult } from "../../lib/validator/validate";
+import { writeJsonReport } from "../../lib/reporter/json";
+import { writeHtmlReport } from "../../lib/reporter/html";
+import { writeJunitReport } from "../../lib/reporter/junit";
+import { generateAndWriteTestPlan } from "../../lib/reporter/test-plan-generator";
+import { assembleSuites } from "../../lib/review/suite-assembler";
 import {
   RunSummary,
   SiteMap,
   type ExecutableScenario,
-} from "../../app/lib/validation";
-import type { FrameworkConfig } from "../../app/lib/config";
+} from "../../lib/validation";
+import type { FrameworkConfig } from "../../lib/config";
 
 const PORT = 47710 + Math.floor(Math.random() * 50);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -242,7 +242,7 @@ describe("end-to-end pipeline (testcase mode) against fixture login page", () =>
     const html = readFileSync(htmlPath, "utf8");
     expect(html).toContain(runId);
     expect(html).toContain("Login with valid credentials");
-    expect(html).toContain("ISTQB technique coverage");
+    expect(html).toContain("ISTQB Technique Coverage");
 
     const xml = readFileSync(junitPath, "utf8");
     expect(xml).toMatch(/<testsuites name="/);

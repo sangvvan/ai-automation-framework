@@ -1,18 +1,11 @@
 {
   "include": [
-    "**/*.ts",
-    "**/*.tsx",
-    ".server/**/*.ts",
-    ".server/**/*.tsx",
-    "vite.config.ts"
+    "**/*.ts"
   ],
   "exclude": [
     "node_modules",
     "**/__tests__/**",
     "**/*.test.ts",
-    "**/*.test.tsx",
-    "**/*.spec.ts",
-    "**/*.spec.tsx",
     "coverage"
   ],
   "compilerOptions": {
@@ -26,7 +19,6 @@
     ],
     "isolatedModules": true,
     "esModuleInterop": true,
-    "jsx": "react-jsx",
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "allowImportingTsExtensions": true,
@@ -37,11 +29,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "~/*": [
-        "./app/*"
-      ]
-    }
+    "baseUrl": "."
   }
 }

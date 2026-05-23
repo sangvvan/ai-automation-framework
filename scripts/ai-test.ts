@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 // Entrypoint: `npm run ai-test -- <command> [options]`
-import { dispatch } from "../app/lib/cli/dispatch";
-import { analyzeCommand } from "../app/lib/cli/commands/analyze";
-import { runCommand } from "../app/lib/cli/commands/run";
-import { reportCommand } from "../app/lib/cli/commands/report";
-import { configShowCommand } from "../app/lib/cli/commands/config";
-import { crawlCommand } from "../app/lib/cli/commands/crawl";
-import { authCommand } from "../app/lib/cli/commands/auth";
-import { baselinesCommand } from "../app/lib/cli/commands/baselines";
-import { generateCommand } from "../app/lib/cli/commands/generate";
-import { runSuiteCommand } from "../app/lib/cli/commands/run-suite";
-import { regressionCommand } from "../app/lib/cli/commands/regression";
-import { rerunCommand } from "../app/lib/cli/commands/rerun";
-import { workflowCommand } from "../app/lib/cli/commands/workflow";
-import { quickCommand } from "../app/lib/cli/commands/quick";
+import "dotenv/config";
+import { dispatch } from "../lib/cli/dispatch";
+import { analyzeCommand } from "../lib/cli/commands/analyze";
+import { runCommand } from "../lib/cli/commands/run";
+import { reportCommand } from "../lib/cli/commands/report";
+import { configShowCommand } from "../lib/cli/commands/config";
+import { crawlCommand } from "../lib/cli/commands/crawl";
+import { authCommand } from "../lib/cli/commands/auth";
+import { baselinesCommand } from "../lib/cli/commands/baselines";
+import { generateCommand } from "../lib/cli/commands/generate";
+import { runSuiteCommand } from "../lib/cli/commands/run-suite";
+import { regressionCommand } from "../lib/cli/commands/regression";
+import { rerunCommand } from "../lib/cli/commands/rerun";
+import { workflowCommand } from "../lib/cli/commands/workflow";
+import { quickCommand } from "../lib/cli/commands/quick";
 
 const registry = {
   quick: quickCommand,

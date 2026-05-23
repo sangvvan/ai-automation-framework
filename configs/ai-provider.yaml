@@ -1,39 +1,40 @@
 # AI provider routing (ADR-003)
-defaultProvider: codex
+defaultProvider: opencode-ollama
 providers:
   claude:
     enabled: false
-    model: claude-opus-4-7
+    model: claude-sonnet-4-6
     timeoutMs: 60000
   gemini:
-    enabled: false
+    enabled: true
     model: gemini-1.5-pro
     baseUrl: https://generativelanguage.googleapis.com/v1beta/openai/
     timeoutMs: 60000
   codex:
     enabled: true
-    model: o3-mini
+    model: gpt-5.5
     baseUrl: https://api.openai.com/v1
-    timeoutMs: 60000
+    timeoutMs: 120000
   opencode:
     enabled: false
     baseUrl: http://localhost:1234/v1
     model: google/gemma-4-26b-a4b
     timeoutMs: 120000
   opencode-ollama:
-    enabled: false
+    enabled: true
     baseUrl: http://localhost:11434/v1
-    model: llama3.1
+    model: qwen3.6:27b
     timeoutMs: 120000
   mock:
     enabled: true
 fallbackChain:
   design:
-    - claude
+    - opencode-ollama
     - gemini
     - codex
-    - opencode
+    - claude
   validate:
+    - opencode-ollama
     - gemini
     - codex
     - claude
