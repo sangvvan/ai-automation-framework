@@ -6,6 +6,7 @@ import { discoverSiteMap } from "../../crawler/discover";
 import { crawlsRepo } from "../../db/crawls";
 import { CrawlConfig } from "../../validation/sitemap";
 import { generateTestCasesFromSiteMap } from "../../workflow/generate";
+import { generateScriptsForSuite } from "../../workflow/generate-scripts";
 import {
   readWorkflowInput,
   safePathSegment,
@@ -25,11 +26,13 @@ import type { CliCommand } from "../commands";
 export const workflowCommand: CliCommand = {
   help: {
     name: "workflow",
-    summary: "Run auth, crawl, test-case generation, execution, and report per role.",
+    summary: "Run auth, crawl, test-case generation, Playwright script generation, execution, and report per role.",
     example: "ai-test workflow --input inputs/projects/my-app.yaml",
     options: [
       { flag: "--input", description: "Workflow YAML input file (required)" },
       { flag: "--skip-preflight", description: "Skip P0 environment checks (boolean)" },
+      { flag: "--auto-specs", description: "Emit Playwright POM scripts after test-case generation (default: always on)" },
+      { flag: "--overwrite-pom", description: "Overwrite existing POM files (default: false — preserves hand-edited helpers)" },
     ],
   },
   run: async (args) => {
@@ -122,9 +125,14 @@ export const workflowCommand: CliCommand = {
         role: role.name,
         outputDir: casesDir,
         maxScenariosPerPage: input.generation.maxScenariosPerPage,
+        scenariosPerTechnique: input.generation.scenariosPerTechnique,
+        scenariosPerNfCategory: input.generation.scenariosPerNfCategory,
         categories: input.generation.categories,
         storageStatePath,
         fallbackSmoke: input.generation.fallbackSmoke,
+        nonFunctionalCategories: input.generation.skipNonFunctional
+          ? false
+          : input.generation.nonFunctionalCategories,
       });
       process.stdout.write(
         `  generate: ${generated.files.length} file(s), manifest ${generated.manifestPath}\n`,
@@ -135,6 +143,37 @@ export const workflowCommand: CliCommand = {
       if (!generated.files.length) {
         hasOrchestrationError = true;
         continue;
+      }
+
+      // ── Step: Generate Playwright automation scripts ──────────────────────
+      // Convert every YAML test case into a runnable .spec.ts file so the
+      // test suite is always backed by generated, executable automation code.
+      let scriptsResult;
+      try {
+        scriptsResult = await generateScriptsForSuite({
+          generationResult: generated,
+          project: input.project,
+          role: role.name,
+          outputDir: input.generation.scriptsDir,
+          istqbAnnotations: true,
+          overwritePom: flagBool(args, "overwrite-pom"),
+        });
+        process.stdout.write(
+          `  scripts: ${scriptsResult.specFiles.length} spec + ${scriptsResult.pomFiles.length} POM file(s) → ${scriptsResult.scriptsDir}\n`,
+        );
+        if (scriptsResult.pomFilesPreserved > 0) {
+          process.stdout.write(
+            `  scripts: ${scriptsResult.pomFilesPreserved} POM file(s) preserved (hand-edits kept)\n`,
+          );
+        }
+        if (scriptsResult.skippedPages > 0) {
+          process.stderr.write(`  scripts: skipped ${scriptsResult.skippedPages} page(s)\n`);
+        }
+      } catch (err) {
+        // Script generation failure is non-fatal — run-suite still uses YAML.
+        process.stderr.write(
+          `  note: automation script generation skipped (${(err as Error).message})\n`,
+        );
       }
 
       let result;

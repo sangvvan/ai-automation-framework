@@ -15,6 +15,8 @@ import { regressionCommand } from "../lib/cli/commands/regression";
 import { rerunCommand } from "../lib/cli/commands/rerun";
 import { workflowCommand } from "../lib/cli/commands/workflow";
 import { quickCommand } from "../lib/cli/commands/quick";
+import { generateScriptsCommand } from "../lib/cli/commands/generate-scripts";
+import { istqbTemplateCommand } from "../lib/cli/commands/istqb-template";
 
 const registry = {
   quick: quickCommand,
@@ -23,6 +25,7 @@ const registry = {
   crawl: crawlCommand,
   auth: authCommand,
   generate: generateCommand,
+  "generate-scripts": generateScriptsCommand,
   "run-suite": runSuiteCommand,
   regression: regressionCommand,
   rerun: rerunCommand,
@@ -30,6 +33,7 @@ const registry = {
   baselines: baselinesCommand,
   report: reportCommand,
   config: configShowCommand,
+  "istqb-template": istqbTemplateCommand,
 };
 
 const io = {

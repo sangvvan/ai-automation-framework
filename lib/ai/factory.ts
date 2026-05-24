@@ -37,7 +37,7 @@ export function buildProvider(opts: BuildProviderOptions): AiProvider {
             name: "gemini",
             baseUrl: spec?.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta/openai/",
             apiKey: getEnv().GEMINI_API_KEY,
-            model: spec?.model ?? "gemini-1.5-pro",
+            model: spec?.model ?? "gemini-2.5-flash",
             timeoutMs: spec?.timeoutMs ?? 60000,
             authStyle: "bearer",
           }),

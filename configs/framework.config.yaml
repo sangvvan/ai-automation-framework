@@ -16,13 +16,26 @@ runner:
   navigationTimeoutMs: 30000
   captureScreenshotOnSuccess: false
 generation:
+  # Functional: scenarios per ISTQB technique (8 techniques by default).
+  # 3 per technique = ~24 functional TCs per page — safe for Ollama on 24 GB RAM.
+  # Raise to 5 for cloud providers (Claude / Gemini / GPT-4).
+  scenariosPerTechnique: 3
+  # Legacy ceiling (kept for backward compatibility with older configs).
   maxScenarios: 25
+  # Non-functional: scenarios per quality category (a11y, security, perf, …).
+  # 2 per category × 5 categories = ~10 non-functional TCs per page.
+  scenariosPerNfCategory: 2
   categories:
     - positive
     - negative
     - required-field
     - boundary
     - navigation
+    - ui
+    - error-handling
+    - security
+    - accessibility
+    - performance
 report:
   screenshotDiffThreshold: 0.001
   maskKeys:

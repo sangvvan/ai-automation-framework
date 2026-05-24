@@ -36,9 +36,31 @@ export const WorkflowInput = z.object({
   generation: z
     .object({
       outputDir: z.string().min(1).default("tests/generated"),
+      /** Total functional scenario ceiling per page (legacy, overridden by scenariosPerTechnique). */
       maxScenariosPerPage: z.number().int().positive().optional(),
+      /**
+       * Scenarios requested per ISTQB technique.
+       * Each of the 8 techniques gets this many scenarios (not divided from a total).
+       * Recommended: 3 for Ollama, 5 for cloud.
+       */
+      scenariosPerTechnique: z.number().int().positive().optional(),
+      /** Scenarios per non-functional category (a11y, security, perf, …). Default: 2. */
+      scenariosPerNfCategory: z.number().int().positive().optional(),
+      /**
+       * Non-functional categories to generate. Set to [] to disable.
+       * Default (omitted): all 5 categories.
+       */
+      nonFunctionalCategories: z
+        .array(z.enum(["accessibility", "security", "performance", "usability", "compatibility"]))
+        .optional(),
+      /** Disable all non-functional generation. */
+      skipNonFunctional: z.boolean().default(false),
       categories: z.array(z.string().min(1)).optional(),
       fallbackSmoke: z.boolean().default(true),
+      /** Emit Page Object Model helper classes alongside .spec.ts files */
+      emitPom: z.boolean().default(false),
+      /** Override scripts output directory */
+      scriptsDir: z.string().min(1).optional(),
     })
     .default({}),
   run: z

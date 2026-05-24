@@ -1,0 +1,54 @@
+# ── Demo workflow — edit baseUrl to point at any web app ─────────────────────
+#
+# Run with:
+#   npm run ai-test -- workflow --input inputs/projects/demo.yaml
+#
+# Or quick-start (auto-bootstrap everything from a URL):
+#   npm run ai-test -- quick --url https://your-app.com
+# ─────────────────────────────────────────────────────────────────────────────
+
+project: demo
+baseUrl: https://example.com        # ← change to your app URL
+
+roles:
+  - name: anonymous
+  # Uncomment to test authenticated flows:
+  # - name: authenticated
+  #   authRecipe: inputs/auth/demo.yaml
+
+crawl:
+  maxPages: 5                     # keep small for local model (less pages = faster)
+  maxDepth: 2
+  maxConcurrency: 1               # single thread — polite + avoids RAM spikes
+  perHostQps: 1
+  includeSubdomains: false
+  ignoreRobots: false
+
+generation:
+  outputDir: tests/generated
+  # Tuned for qwen2.5:14b on 24 GB RAM.
+  # Each page makes ~6 AI calls (one per technique). Keep ≤6.
+  # Raise to 14+ when using claude/gemini instead.
+  maxScenariosPerPage: 5
+  fallbackSmoke: true             # emit a smoke test if AI generation fails
+  categories:
+    - positive
+    - negative
+    - required-field
+    - boundary
+    - navigation
+
+run:
+  testLevel: system
+  browsers:
+    - chromium
+  locales: []
+  nonFunctional:
+    a11y: false                   # disable for first run — enable when stable
+    vitals: true
+    securityHeaders: true
+  junit: true
+  testPlan: true
+  persistDefects: true
+  prComment: false
+  suiteTag: demo

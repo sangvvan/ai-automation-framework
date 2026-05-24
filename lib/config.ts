@@ -59,7 +59,16 @@ export const RunnerConfig = z.object({
 });
 
 export const GenerationConfig = z.object({
+  /** Total functional scenario ceiling per page (legacy). */
   maxScenarios: z.number().int().positive().default(25),
+  /**
+   * Scenarios per ISTQB technique per page.
+   * Preferred over maxScenarios because it gives every technique a fair budget.
+   * Default: 3 (Ollama-safe). Raise to 5 for cloud providers.
+   */
+  scenariosPerTechnique: z.number().int().positive().optional(),
+  /** Scenarios per non-functional category (a11y, security, …). Default: 2. */
+  scenariosPerNfCategory: z.number().int().positive().optional(),
   categories: z.array(z.string()).default([]),
 });
 

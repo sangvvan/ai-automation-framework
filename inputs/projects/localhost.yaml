@@ -1,19 +1,56 @@
+# ── localhost dev workflow — full ISTQB + non-functional coverage ─────────────
+#
+# Run: npm run ai-test -- workflow --input inputs/projects/localhost.yaml
+#
+# AI call budget per page:
+#   Functional  : 8 techniques × 3 scenarios = ~24 TCs
+#   Non-functional: 5 categories × 2 scenarios = ~10 TCs
+#   Total per page: ~34 test cases
+#
+# Tune scenariosPerTechnique / scenariosPerNfCategory for your AI provider:
+#   Ollama (qwen2.5:14b, 24 GB): keep at 3/2 (fits 2048 token budget)
+#   Cloud  (Claude/GPT/Gemini) : raise to 5/3 for richer coverage
+# ─────────────────────────────────────────────────────────────────────────────
+
 project: localhost
 baseUrl: http://localhost:3000
+
 roles:
   - name: admin
     authRecipe: inputs/auth/localhost.yaml
+
 crawl:
-  maxPages: 2
-  maxDepth: 3
-  maxConcurrency: 2
-  perHostQps: 2
+  maxPages: 5                       # increase when Ollama is stable; each page = ~13 AI calls
+  maxDepth: 2
+  maxConcurrency: 1                 # single thread — avoids RAM spikes with local model
+  perHostQps: 1
   includeSubdomains: false
   ignoreRobots: false
+
 generation:
   outputDir: tests/generated
-  maxScenariosPerPage: 14
+
+  # ── Functional (ISTQB) ───────────────────────────────────────────────────
+  # scenariosPerTechnique: scenarios requested per technique per page.
+  # 8 techniques × 3 = 24 functional TCs per page.
+  # Raise to 5 for cloud providers.
+  scenariosPerTechnique: 3
+
+  # ── Non-functional ────────────────────────────────────────────────────────
+  # scenariosPerNfCategory: scenarios per quality characteristic per page.
+  # 5 categories × 2 = 10 non-functional TCs per page.
+  scenariosPerNfCategory: 2
+
+  # All 5 non-functional categories enabled (omit or set skipNonFunctional:true to disable)
+  nonFunctionalCategories:
+    - accessibility
+    - security
+    - performance
+    - usability
+    - compatibility
+
   fallbackSmoke: true
+
 run:
   testLevel: system
   browsers:
@@ -21,7 +58,7 @@ run:
   locales: []
   nonFunctional:
     a11y: true
-    a11yFailOn: []
+    a11yFailOn: []                  # raise to [serious, critical] when baseline is stable
     vitals: true
     securityHeaders: true
   junit: true

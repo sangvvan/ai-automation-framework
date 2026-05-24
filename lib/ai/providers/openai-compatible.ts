@@ -62,25 +62,35 @@ export class OpenAiCompatibleProvider implements AiProvider {
       this.opts.model.startsWith("gpt-5") ||
       this.opts.model.startsWith("gpt-6");
 
+    // Local models (Ollama/LM Studio) cap at 2048 to avoid OOM;
+    // cloud models use 4096. Callers may override via input.maxTokens.
+    const isLocalModel =
+      this.opts.baseUrl.includes("localhost") ||
+      this.opts.baseUrl.includes("127.0.0.1");
+    const defaultMaxTokens = isLocalModel ? 2048 : 4096;
+
     const body: Record<string, any> = {
       model: this.opts.model,
-      response_format: { type: "json_object" } as const,
+      // response_format json_object is not supported by all local models;
+      // we rely on the system prompt + extractJson() instead.
+      ...(isLocalModel ? {} : { response_format: { type: "json_object" } }),
       messages: [
         {
           role: "system" as const,
           content:
             input.systemPrompt +
-            "\n\nRespond with a single JSON object. No prose, no markdown.",
+            "\n\nYou MUST respond with a single JSON object only. " +
+            "No explanation, no markdown fences — just raw JSON.",
         },
         { role: "user" as const, content: input.userPrompt },
       ],
     };
 
     if (isReasoningModel) {
-      body.max_completion_tokens = input.maxTokens ?? 4096;
+      body.max_completion_tokens = input.maxTokens ?? defaultMaxTokens;
     } else {
-      body.max_tokens = input.maxTokens ?? 4096;
-      body.temperature = 0.2;
+      body.max_tokens = input.maxTokens ?? defaultMaxTokens;
+      body.temperature = isLocalModel ? 0.1 : 0.2; // lower temp = more deterministic JSON
     }
 
     try {

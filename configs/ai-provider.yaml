@@ -1,40 +1,61 @@
 # AI provider routing (ADR-003)
+# ── Active default ────────────────────────────────────────────────────────────
+# Local Ollama. Requires: ollama pull qwen2.5:14b
+# Switch to "claude" and add CLAUDE_API_KEY for cloud fallback.
 defaultProvider: opencode-ollama
+
 providers:
-  claude:
-    enabled: false
-    model: claude-sonnet-4-6
-    timeoutMs: 60000
-  gemini:
-    enabled: true
-    model: gemini-1.5-pro
-    baseUrl: https://generativelanguage.googleapis.com/v1beta/openai/
-    timeoutMs: 60000
-  codex:
-    enabled: true
-    model: gpt-5.5
-    baseUrl: https://api.openai.com/v1
-    timeoutMs: 120000
-  opencode:
-    enabled: false
-    baseUrl: http://localhost:1234/v1
-    model: google/gemma-4-26b-a4b
-    timeoutMs: 120000
+  # ── Local (Ollama) ──────────────────────────────────────────────────────────
   opencode-ollama:
     enabled: true
     baseUrl: http://localhost:11434/v1
-    model: qwen3.6:27b
-    timeoutMs: 120000
-  mock:
+    # Models that fit 24 GB RAM (pick one, pull with: ollama pull <model>):
+    #   qwen2.5:14b      8.7 GB  ← recommended: best JSON + instruction following
+    #   mistral-nemo     7.1 GB  ← fast, good quality
+    #   phi4:14b         8.4 GB  ← strong reasoning
+    #   llama3.1:8b      4.7 GB  ← lightest option
+    model: qwen2.5:14b
+    timeoutMs: 180000             # local models can be slow on first token
+
+  opencode:
+    enabled: false                # LM Studio fallback (enable if preferred)
+    baseUrl: http://localhost:1234/v1
+    model: qwen2.5:14b
+    timeoutMs: 180000
+
+  # ── Cloud (optional, for higher quality or when Ollama not running) ─────────
+  claude:
     enabled: true
+    model: claude-sonnet-4-6
+    timeoutMs: 90000
+
+  gemini:
+    enabled: true
+    model: gemini-2.5-flash
+    baseUrl: https://generativelanguage.googleapis.com/v1beta/openai/
+    timeoutMs: 60000
+
+  codex:
+    enabled: true
+    model: gpt-4o
+    baseUrl: https://api.openai.com/v1
+    timeoutMs: 120000
+
+  mock:
+    enabled: true                 # always available; used in unit tests
+
+# ── Fallback chains ───────────────────────────────────────────────────────────
+# Local Ollama first → cloud providers → mock (offline last resort)
 fallbackChain:
   design:
     - opencode-ollama
+    - claude
     - gemini
     - codex
-    - claude
+    - mock
   validate:
     - opencode-ollama
+    - claude
     - gemini
     - codex
-    - claude
+    - mock
