@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "ai-test": {
+      "type": "stdio",
+      "command": "npm",
+      "args": [
+        "--prefix",
+        "/FULL/PATH/TO/ai-automation-framework",
+        "run",
+        "mcp-server"
+      ],
+      "env": {
+        "GEMINI_API_KEY": "${env:GEMINI_API_KEY}"
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "ai-automation-framework": {
+      "type": "stdio",
+      "command": "npm",
+      "args": ["run", "mcp-server"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GEMINI_API_KEY": "${env:GEMINI_API_KEY}"
+      }
+    }
+  }
+}
