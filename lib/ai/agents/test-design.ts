@@ -159,12 +159,26 @@ EXPECTED RESULT (at least one field):
   {"textNotContains": "Error"}               — text is NOT visible
 
 ═══════════════════════════════════════════════════════════════
+SYNTHETIC TEST DATA — use contextually appropriate values:
+  Emails    : user@example.com, qa.tester+tag@testmail.io, admin@corp.test
+  Passwords : P@ssw0rd!2024, Str0ng#Pass!, Hunter2! (for invalid: "abc", " ", "password")
+  Names     : John Doe, María García, 田中 太郎 (use unicode for i18n coverage)
+  Phones    : +1-555-010-1234, +44 20 7946 0958, 0900-123-456 (invalid: "abc", "000")
+  Dates     : 2024-01-15, 01/31/2025 (past), 2099-12-31 (future), 00/00/0000 (invalid)
+  Numbers   : 42, 0, -1, 99999, 1.5, 1e6 (use boundary values for numeric fields)
+  Addresses : 123 Main St, Springfield, IL 62701, USA
+  Codes     : ABC-123, REF-2024-001, TEST_CODE_99
+  Search    : "hello world", "  spaces  ", "<script>", "a".repeat(256)
+  IDs/refs  : 00000000-0000-0000-0000-000000000001, ORD-99999
+
 RULES:
-1. Only reference elements that appear in the provided PageAnalysis.
-2. For fills use SYNTHETIC data only: test@example.com, Password123!, John Doe.
-3. Every negative/required-field scenario MUST verify the error message with verify_text.
-4. Each scenario must have at least 2 steps (navigate + assert minimum).
-5. Do NOT exceed maxScenarios in your response.`;
+1. ONLY reference elements that appear in the provided PageAnalysis (url, name, role, type).
+2. Use SYNTHETIC data from the list above; choose the type that matches the field.
+3. Every negative/required-field scenario MUST end with verify_text asserting the exact error message text visible on the page.
+4. Every scenario MUST have at least 3 steps: open_page → (action) → verify outcome.
+5. Scenario IDs must be unique and descriptive: prefix with technique abbrev, e.g. EP-001, BVA-002, DT-003.
+6. Scenario titles must be specific: bad="Login fails", good="Login with blank password shows required-field error".
+7. Do NOT exceed maxScenarios in your response.`;
 
 // ---------------------------------------------------------------------------
 // Main function
@@ -390,7 +404,12 @@ function locatorText(loc: import("../../validation").Locator): string | undefine
 }
 
 function normalize(s: string | undefined): string {
-  return (s ?? "").toLowerCase().trim();
+  return (s ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")                  // collapse multiple spaces
+    .normalize("NFD")                       // decompose diacritics
+    .replace(/[̀-ͯ]/g, "");       // strip combining marks (e.g. é → e)
 }
 
 // ---------------------------------------------------------------------------

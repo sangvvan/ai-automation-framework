@@ -27,6 +27,9 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary, outDir?: 
   const failPct = t.total ? Math.round((t.failed / t.total) * 100) : 0;
   const skipPct = t.total ? Math.round((t.skipped / t.total) * 100) : 0;
 
+  const totalDurationMs = new Date(summary.finishedAt).getTime() - new Date(summary.startedAt).getTime();
+  const totalDurationStr = formatDuration(totalDurationMs);
+
   const diff = previous ? computeDiff(summary, previous) : null;
 
   const rows = summary.scenarios
@@ -83,8 +86,9 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary, outDir?: 
         </div>
       </div>
       <div class="time-meta">
-        <svg class="icon-clock" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm16.2 14.2L11 13V7h1.5v5.2l4.5 2.7-.8 1.3z"/></svg>
+        <svg class="icon-clock" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
         <span>${escapeHtml(summary.startedAt.split(".")[0].replace("T", " "))}</span>
+        <span class="duration-badge" title="Total run duration">${escapeHtml(totalDurationStr)}</span>
       </div>
     </div>
   </header>
@@ -135,6 +139,10 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary, outDir?: 
             <button class="btn btn-secondary" onclick="expandAll(true)">Expand All</button>
             <button class="btn btn-secondary" onclick="expandAll(false)">Collapse All</button>
           </div>
+          <div class="toolbar-search">
+            <svg viewBox="0 0 24 24" class="search-icon"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+            <input class="search-input" id="scenario-search" type="text" placeholder="Search scenarios…" oninput="searchScenarios(this.value)" />
+          </div>
           <div class="toolbar-right">
             <span class="toolbar-lbl">Filter:</span>
             <button class="btn btn-filter active" data-filter="all" onclick="filterScenarios('all')">All (${t.total})</button>
@@ -175,28 +183,30 @@ export function renderHtml(summary: RunSummary, previous?: RunSummary, outDir?: 
       });
     }
 
-    function filterScenarios(status) {
-      const buttons = document.querySelectorAll('.btn-filter');
-      buttons.forEach(b => {
-        if (b.getAttribute('data-filter') === status) {
-          b.classList.add('active');
-        } else {
-          b.classList.remove('active');
-        }
-      });
+    let _activeFilter = 'all';
+    let _searchQuery = '';
 
-      const scenarios = document.querySelectorAll('details.scenario');
-      scenarios.forEach(s => {
-        if (status === 'all') {
-          s.style.display = 'block';
-        } else {
-          if (s.classList.contains(status)) {
-            s.style.display = 'block';
-          } else {
-            s.style.display = 'none';
-          }
-        }
+    function applyVisibility() {
+      const q = _searchQuery.toLowerCase();
+      document.querySelectorAll('details.scenario').forEach(s => {
+        const matchFilter = _activeFilter === 'all' || s.classList.contains(_activeFilter);
+        const title = (s.querySelector('.title')?.textContent ?? '').toLowerCase();
+        const matchSearch = !q || title.includes(q);
+        s.style.display = matchFilter && matchSearch ? 'block' : 'none';
       });
+    }
+
+    function filterScenarios(status) {
+      _activeFilter = status;
+      document.querySelectorAll('.btn-filter').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-filter') === status);
+      });
+      applyVisibility();
+    }
+
+    function searchScenarios(query) {
+      _searchQuery = query;
+      applyVisibility();
     }
 
     function openModal(imgSrc, captionText) {
@@ -232,6 +242,9 @@ function renderRow(
 ): string {
   const status = s.validation.status;
   const cls = status === "passed" ? "ok" : "ko";
+  const scenarioDurationMs =
+    new Date(s.result.finishedAt).getTime() - new Date(s.result.startedAt).getTime();
+  const durationStr = formatDuration(scenarioDurationMs);
   const steps = s.result.steps
     .map(
       (st) => {
@@ -269,9 +282,11 @@ function renderRow(
         <span class="title">${escapeHtml(s.scenario.title)}</span>
       </div>
       <div class="meta">
+        ${s.scenario.designTechnique ? `<span class="meta-tag tag-technique">${escapeHtml(s.scenario.designTechnique)}</span>` : ""}
         <span class="meta-tag tag-type">${escapeHtml(s.scenario.type)}</span>
         <span class="meta-tag tag-prio">${escapeHtml(s.scenario.priority)}</span>
         <span class="meta-tag tag-origin">${escapeHtml(s.scenario.origin)}</span>
+        <span class="meta-tag tag-duration" title="Scenario execution time">${escapeHtml(durationStr)}</span>
       </div>
     </summary>
     <div class="scenario-details">
@@ -1413,7 +1428,67 @@ const CSS = `
     color: var(--color-text-muted);
   }
   .muted { color: var(--color-text-muted); }
+
+  /* Duration badge in header */
+  .duration-badge {
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background-color: var(--color-sk-bg);
+    color: var(--color-text-muted);
+    border: 1px solid var(--border-color);
+  }
+
+  /* Search bar */
+  .toolbar-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 4px 10px;
+  }
+  .toolbar-search:focus-within {
+    border-color: var(--color-info);
+    box-shadow: 0 0 0 2px var(--color-info-bg);
+  }
+  .search-icon {
+    width: 14px;
+    height: 14px;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+  .search-input {
+    font-family: var(--font-family);
+    font-size: 0.825rem;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--color-text);
+    width: 180px;
+  }
+  .search-input::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  /* Technique tag in scenario summary */
+  .tag-technique {
+    background-color: var(--color-info-bg);
+    color: var(--color-info-text);
+    font-family: monospace;
+    font-size: 0.7rem;
+  }
+
+  /* Duration tag in scenario summary */
+  .tag-duration {
+    font-variant-numeric: tabular-nums;
+    min-width: 52px;
+    text-align: right;
+  }
 `;
+
 
 function escapeHtml(s: string | undefined | null): string {
   if (s === undefined || s === null) return "";
@@ -1439,4 +1514,13 @@ function relative(p: string, outDir?: string): string {
     if (p.startsWith(cwd)) return path.relative(process.cwd(), p);
   }
   return p;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 0 || isNaN(ms)) return "—";
+  if (ms < 1_000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1_000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1_000);
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }

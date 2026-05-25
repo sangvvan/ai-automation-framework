@@ -55,19 +55,23 @@ Instructions:
   // ── ISTQB-CTFL §4.4 ──────────────────────────────────────────────────────
   "decision-table": `
 TECHNIQUE: Decision Table Testing (ISTQB-CTFL §4.4)
-GOAL: Systematically cover combinations of conditions and their expected outcomes.
+GOAL: Systematically cover every combination of conditions and their expected outcomes.
 
 Instructions:
-- Identify business rules visible on this page (validation rules, role permissions,
-  discount conditions, form-submission guards, feature flags).
-- Build an implied decision table: list conditions as columns, enumerate rows.
-  Example: login form with "email valid?" × "password valid?" →
-    T+T → redirect to dashboard          (positive, P1)
-    T+F → show "incorrect password"      (negative, P1)
-    F+T → show "invalid email format"    (negative, P1)
-    F+F → show both errors               (negative, P2)
-- Produce one scenario per decision-table row.
-- If the page has few conditions, use pairwise reduction (cover every pair).
+- Identify business rules on this page: validation rules, role permissions,
+  discount conditions, form-submission guards, multi-step form gates, feature flags.
+- Build a decision table: conditions as columns, enumerate all rows.
+  Example — login form with "email valid?" × "password valid?" →
+    T+T → redirect to dashboard                 (positive, P1)
+    T+F → show "Incorrect password" error       (negative, P1)
+    F+T → show "Invalid email format" error     (negative, P1)
+    F+F → show BOTH validation errors           (negative, P2)
+- Cardinality rules:
+    ≤2 conditions  → generate ALL combinations (full table, 2²–4 rows max)
+    3 conditions   → generate all 8 rows or use pairwise to cover every 2-way pair
+    4+ conditions  → use pairwise reduction; aim for ≤12 scenarios total
+- Produce ONE scenario per table row; scenario title must quote the condition combo.
+- Every negative row MUST end with a verify_text step asserting the specific error message.
 - Use only browser-executable actions: click, fill, verify_text, verify_url.
 - Mandatory scenario types: positive, negative, error-handling.
 - Tag every scenario with designTechnique="decision-table".`,
@@ -128,35 +132,63 @@ Instructions:
   // ── ISTQB-CTFL §4.8 ──────────────────────────────────────────────────────
   "error-guessing": `
 TECHNIQUE: Error Guessing (ISTQB-CTFL §4.8)
-GOAL: Use QA intuition to find defects that structured techniques miss.
+GOAL: Use adversarial QA intuition to find defects that structured techniques miss.
 
 Instructions:
-- Apply adversarial thinking to this specific page. Common attack vectors:
-    Injection: SQL snippets ("1' OR '1'='1"), script tags (<script>alert(1)</script>),
-               special chars (";DROP TABLE", ../../etc/passwd).
-    UX tricks: double-click submit, rapid tab navigation, browser back after submit.
-    Data edge cases: very long strings (>1000 chars), unicode (中文, emoji 🎯),
-                     numbers as strings, negative numbers in text fields.
-    Auth: access URL directly without login, modify URL IDs (IDOR check).
-    State: submit form twice, reload mid-flow, open in two tabs simultaneously.
-- Generate scenarios for the most likely defects on THIS page's elements.
+- Apply adversarial thinking tuned to THIS page's actual elements. Target:
+
+  Input injection (use verify_text to confirm the app does NOT reflect/execute):
+    • Classic SQLi:  ' OR '1'='1  /  '; DROP TABLE users; --
+    • Stored XSS:    <img src=x onerror=alert(1)>  /  "><script>alert(document.domain)</script>
+    • Path traversal: ../../../etc/passwd  /  ..%2F..%2Fetc%2Fshadow
+    • Template injection: {{7*7}}  /  ${7*7}  /  <%= 7*7 %>
+
+  Modern web attack vectors:
+    • JWT/token: strip "Bearer " prefix, submit expired token, modify claims via base64
+    • IDOR: increment/decrement resource IDs in URL params (e.g. /user/123 → /user/124)
+    • Mass assignment: add extra fields to form data (e.g. role=admin, isAdmin=true)
+    • Open redirect: append ?next=https://evil.com to login/redirect URLs
+    • Clickjacking indicator: submit action triggered by simulating iframe overlay
+
+  UX/browser edge cases:
+    • Double-submit: click submit twice rapidly (check no duplicate record created)
+    • Browser back: submit → navigate back → resubmit (should NOT reprocess)
+    • Copy-paste: paste rich-text or zero-width chars into text fields
+    • Autofill conflict: fill fields, then clear, then rely on browser autofill
+
+  Data extremes (for any text input present):
+    • 1001-char string (overflow boundary)
+    • Unicode: mixed RTL+LTR text, emoji clusters 🏳️‍🌈, null bytes \x00
+    • Numbers in text fields, negative values, scientific notation 1e9
+    • Whitespace-only: "   " (spaces), "\t\n\r" (control chars)
+
+- Generate scenarios for the 3–5 most likely defects based on THIS page's actual elements.
+- Every scenario must end with verify_text or verify_url confirming safe/expected behavior.
 - Mandatory scenario types: negative, security, error-handling.
 - Tag every scenario with designTechnique="error-guessing".`,
 
   // ── ISTQB-CTFL §4.9 ──────────────────────────────────────────────────────
   "exploratory-charter": `
 TECHNIQUE: Exploratory Testing Charter (ISTQB-CTFL §4.9)
-GOAL: Goal-driven, time-boxed exploration to discover unexpected defects.
+GOAL: Goal-driven exploration to find unexpected defects through structured charters.
 
 Instructions:
-- Define a short charter for this page: "Explore <feature> to find <risk>."
-  Examples:
-    "Explore the search feature to find result relevance or injection issues."
-    "Explore the file upload to find size/type/malware bypass issues."
-    "Explore pagination to find off-by-one or missing-data issues."
-- Generate 2–3 concrete executable scenarios derived from the charter.
-  Each scenario is a specific test idea, not a vague description.
-- Include at least one scenario that challenges a core assumption about the page.
+- Write ONE concise charter for this page:
+    "Explore <specific feature visible on page> to find <concrete risk> within 30 min."
+  Charter must reference ACTUAL elements from the PageAnalysis, e.g.:
+    "Explore the user search dropdown to find stale data or race-condition results within 30 min."
+    "Explore the multi-step checkout form to find state-loss on browser back within 30 min."
+    "Explore the file-upload field to find bypass of file-type restrictions within 30 min."
+
+- From the charter derive exactly 3 executable test scenarios. Each must have:
+    1. A concrete, specific title (not "Explore X" — state the exact hypothesis)
+    2. Executable steps that exercise the risk described in the charter
+    3. A verify_text or verify_url step confirming the EXPECTED safe behavior
+    4. Success criterion: what a PASS looks like (app handles gracefully)
+
+- One scenario MUST challenge a core assumption: e.g. test what happens when
+  a prerequisite is missing, an async call is slow, or the user navigates away mid-flow.
+
 - Mandatory scenario types: negative, ui, error-handling.
 - Tag every scenario with designTechnique="exploratory-charter".`,
 };
