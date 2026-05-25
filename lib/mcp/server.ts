@@ -32,6 +32,7 @@
 
 import path from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -48,6 +49,44 @@ import { generateScriptsForSuite } from "../workflow/generate-scripts.js";
 import { runTestCaseSuite } from "../workflow/run-suite.js";
 import { FrameworkConfig, type ProviderName } from "../config.js";
 import type { BrowserName } from "../browser/launcher.js";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Project config — ai-test.config.json in the user's project root
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ProjectConfig {
+  url?: string;
+  project?: string;
+  role?: string;
+  provider?: string;
+  max_pages?: number;
+  max_depth?: number;
+  scenarios_per_technique?: number;
+  skip_non_functional?: boolean;
+  a11y?: boolean;
+  security_headers?: boolean;
+}
+
+async function readProjectConfig(projectDir: string): Promise<ProjectConfig> {
+  // 1. ai-test.config.json (explicit)
+  const jsonPath = path.join(projectDir, "ai-test.config.json");
+  if (existsSync(jsonPath)) {
+    try {
+      return JSON.parse(await readFile(jsonPath, "utf8")) as ProjectConfig;
+    } catch { /* ignore parse errors */ }
+  }
+
+  // 2. Auto-detect project name from package.json
+  const pkgPath = path.join(projectDir, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(await readFile(pkgPath, "utf8"));
+      return { project: pkg.name as string | undefined };
+    } catch { /* ignore */ }
+  }
+
+  return {};
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Output-directory helpers
