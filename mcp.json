@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "ai-automation-framework": {
+      "command": "npm",
+      "args": ["run", "mcp-server", "--"],
+      "env": {
+        "CLAUDE_API_KEY": "${CLAUDE_API_KEY}",
+        "GEMINI_API_KEY": "${GEMINI_API_KEY}",
+        "CODEX_API_KEY": "${CODEX_API_KEY}",
+        "AI_TEST_DEFAULT_PROVIDER": "${AI_TEST_DEFAULT_PROVIDER:-claude}"
+      },
+      "description": "AI-powered test automation: crawl → generate ISTQB test cases → Playwright scripts → run tests → HTML/JSON/JUnit reports."
+    }
+  }
+}
