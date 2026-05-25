@@ -5,6 +5,9 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "ai-test-mcp": "./scripts/mcp-server.ts"
+  },
   "scripts": {
     "typecheck": "tsc",
     "ai-test": "vite-node scripts/ai-test.ts",

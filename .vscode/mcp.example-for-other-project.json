@@ -10,7 +10,8 @@
         "mcp-server"
       ],
       "env": {
-        "GEMINI_API_KEY": "${env:GEMINI_API_KEY}"
+        "GEMINI_API_KEY": "${env:GEMINI_API_KEY}",
+        "MCP_PROJECT_DIR": "${workspaceFolder}"
       }
     }
   }
