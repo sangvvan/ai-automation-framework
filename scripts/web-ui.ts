@@ -114,9 +114,10 @@ async function createProjectFiles(opts: {
     await writeFile(path.join(rootDir, authFile), stringifyYaml(recipe), "utf8");
   }
 
+  const roleName = opts.roleName || (authFile ? "authenticated" : "anonymous");
   const roles = authFile
-    ? [{ name: "anonymous" }, { name: opts.roleName || "authenticated", authRecipe: authFile }]
-    : [{ name: "anonymous" }];
+    ? [{ name: roleName, authRecipe: authFile }]
+    : [{ name: roleName }];
 
   const yaml = {
     project: opts.projectName, baseUrl: opts.baseUrl, roles,
