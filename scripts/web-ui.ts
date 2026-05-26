@@ -1,28 +1,23 @@
 /**
- * Web UI — Express wrapper around `ai-test workflow`.
+ * Web UI — form-driven project init + workflow runner.
+ *
+ * Flow:
+ *   User fills form → backend generates inputs/projects/<slug>.yaml
+ *   + inputs/auth/<slug>.yaml (if credentials supplied) → spawns workflow
  *
  * Usage:
  *   npm run web-ui
- *   PORT=8080 npm run web-ui
- *
- * Routes:
- *   GET  /                      → single-page UI
- *   GET  /input-files/projects  → list inputs/projects/*.yaml
- *   GET  /input-files/auth      → list inputs/auth/*.yaml
- *   POST /run                   → spawn workflow, return { runId }
- *   POST /stop/:runId           → SIGTERM child process
- *   GET  /stream/:id            → SSE live log stream
- *   GET  /reports               → JSON list of HTML reports
- *   GET  /report-files/         → static HTML report files
+ *   PORT=8080 HOST=0.0.0.0 npm run web-ui
  */
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 import { generateRunId } from "../lib/cli/run-id.js";
 import type { ServerResponse } from "node:http";
@@ -48,9 +43,8 @@ const MAX_BUFFER_LINES = 2000;
 
 setInterval(() => {
   const cutoff = Date.now() - 60 * 60 * 1000;
-  for (const [id, r] of runs) {
+  for (const [id, r] of runs)
     if (r.status !== "running" && r.startedAt.getTime() < cutoff) runs.delete(id);
-  }
 }, 5 * 60 * 1000);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -59,8 +53,7 @@ setInterval(() => {
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 function sseWrite(res: ServerResponse, line: string) {
-  const escaped = line.replace(/\n/g, "\ndata: ");
-  res.write(`data: ${escaped}\n\n`);
+  res.write(`data: ${line.replace(/\n/g, "\ndata: ")}\n\n`);
 }
 
 function broadcast(run: RunRecord, line: string) {
@@ -70,30 +63,124 @@ function broadcast(run: RunRecord, line: string) {
   for (const sub of run.subscribers) sseWrite(sub, clean);
 }
 
-function finishRun(run: RunRecord, exitCode: number, label: string) {
-  run.status = exitCode === 0 ? "done" : label === "stopped" ? "stopped" : "error";
+function finishRun(run: RunRecord, exitCode: number) {
+  run.status = exitCode === 0 ? "done" : run.status === "stopped" ? "stopped" : "error";
   run.exitCode = exitCode;
-  for (const sub of run.subscribers) {
-    sseWrite(sub, `[DONE] exitCode=${exitCode}`);
-    sub.end();
-  }
+  for (const sub of run.subscribers) { sseWrite(sub, `[DONE] exitCode=${exitCode}`); sub.end(); }
   run.subscribers.clear();
 }
 
-async function listYamlFiles(dir: string): Promise<string[]> {
-  try {
-    const entries = await readdir(dir);
-    return entries.filter(f => f.endsWith(".yaml") || f.endsWith(".yml")).sort();
-  } catch { return []; }
+function safeSlug(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
 }
 
-// ─── Input schemas ────────────────────────────────────────────────────────────
+// ─── YAML file generators ─────────────────────────────────────────────────────
+
+interface ProjectInit {
+  projectName: string;
+  baseUrl: string;
+  loginUrl?: string;
+  roleName: string;
+  username?: string;
+  password?: string;
+  maxPages: number;
+  maxDepth: number;
+}
+
+async function createProjectFiles(init: ProjectInit): Promise<{
+  projectFile: string;
+  authFile?: string;
+}> {
+  const slug = safeSlug(init.projectName);
+
+  let authFile: string | undefined;
+
+  // Create auth recipe if credentials provided
+  if (init.username && init.password) {
+    const loginUrl = init.loginUrl || init.baseUrl;
+    const recipe = {
+      id: slug,
+      loginUrl,
+      fields: {
+        username: {
+          locator: { kind: "css", css: "input[type='email'],input[name='username'],input[name='email'],input[id*='email'],input[id*='user']" },
+          value: "${SITE_USERNAME}",
+        },
+        password: {
+          locator: { kind: "css", css: "input[type='password']" },
+          value: "${SITE_PASSWORD}",
+        },
+        extras: [],
+      },
+      submit: {
+        locator: { kind: "css", css: "button[type='submit'],input[type='submit'],button:has-text('Login'),button:has-text('Sign in')" },
+      },
+      postLogin: { waitFor: [] },
+      expectsCaptcha: false,
+    };
+
+    authFile = path.join("inputs", "auth", `${slug}.yaml`);
+    await mkdir(path.join(rootDir, "inputs", "auth"), { recursive: true });
+    await writeFile(path.join(rootDir, authFile), stringifyYaml(recipe), "utf8");
+  }
+
+  // Create project workflow YAML
+  const roles = authFile
+    ? [
+        { name: "anonymous" },
+        { name: init.roleName || "authenticated", authRecipe: authFile },
+      ]
+    : [{ name: "anonymous" }];
+
+  const projectYaml = {
+    project: init.projectName,
+    baseUrl: init.baseUrl,
+    roles,
+    crawl: {
+      maxPages: init.maxPages,
+      maxDepth: init.maxDepth,
+      maxConcurrency: 2,
+      perHostQps: 2,
+      includeSubdomains: false,
+      ignoreRobots: false,
+    },
+    generation: {
+      outputDir: "tests/generated",
+      maxScenariosPerPage: 14,
+      fallbackSmoke: true,
+    },
+    run: {
+      testLevel: "system",
+      browsers: ["chromium"],
+      locales: [],
+      nonFunctional: { a11y: true, a11yFailOn: [], vitals: true, securityHeaders: true },
+      junit: true,
+      testPlan: true,
+      persistDefects: true,
+      prComment: false,
+      suiteTag: slug,
+    },
+  };
+
+  const projectFile = path.join("inputs", "projects", `${slug}.yaml`);
+  await mkdir(path.join(rootDir, "inputs", "projects"), { recursive: true });
+  await writeFile(path.join(rootDir, projectFile), stringifyYaml(projectYaml), "utf8");
+
+  return { projectFile, authFile };
+}
+
+// ─── Input schema ─────────────────────────────────────────────────────────────
 
 const RunSchema = z.object({
-  projectFile: z.string().min(1),                           // e.g. "inputs/projects/my-app.yaml"
-  authFile:    z.string().optional(),                       // e.g. "inputs/auth/my-app.yaml"
+  projectName: z.string().min(1).max(80),
+  baseUrl:     z.string().url(),
+  loginUrl:    z.string().url().optional().or(z.literal("")),
+  roleName:    z.string().max(40).default("authenticated"),
+  username:    z.string().max(256).optional(),
+  password:    z.string().max(1024).optional(),
   provider:    z.enum(["gemini","claude","codex","opencode-ollama","mock"]).default("gemini"),
-  overwritePom: z.boolean().default(false),
+  maxPages:    z.number().int().min(1).max(200).default(10),
+  maxDepth:    z.number().int().min(0).max(10).default(3),
 });
 
 // ─── Express app ──────────────────────────────────────────────────────────────
@@ -105,20 +192,8 @@ app.use(express.json());
 // ── GET / ─────────────────────────────────────────────────────────────────────
 app.get("/", (_req, res) => res.send(PAGE_HTML));
 
-// ── GET /input-files/projects ─────────────────────────────────────────────────
-app.get("/input-files/projects", async (_req, res) => {
-  const files = await listYamlFiles(path.join(rootDir, "inputs", "projects"));
-  res.json(files);
-});
-
-// ── GET /input-files/auth ─────────────────────────────────────────────────────
-app.get("/input-files/auth", async (_req, res) => {
-  const files = await listYamlFiles(path.join(rootDir, "inputs", "auth"));
-  res.json(files);
-});
-
 // ── POST /run ─────────────────────────────────────────────────────────────────
-app.post("/run", (req, res) => {
+app.post("/run", async (req, res) => {
   const parsed = RunSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid input" });
@@ -126,42 +201,43 @@ app.post("/run", (req, res) => {
   }
   const input = parsed.data;
 
-  // Validate project file exists
-  const projectPath = path.resolve(rootDir, input.projectFile);
-  if (!existsSync(projectPath)) {
-    res.status(400).json({ error: `Project file not found: ${input.projectFile}` });
-    return;
-  }
-
   const running = [...runs.values()].filter(r => r.status === "running").length;
   if (running >= MAX_CONCURRENT) {
     res.status(429).json({ error: "Too many concurrent runs. Stop one first." });
     return;
   }
 
+  // Generate YAML files before spawning
+  let projectFile: string;
+  let authFile: string | undefined;
+  try {
+    ({ projectFile, authFile } = await createProjectFiles({
+      projectName: input.projectName,
+      baseUrl:     input.baseUrl,
+      loginUrl:    input.loginUrl || undefined,
+      roleName:    input.roleName,
+      username:    input.username,
+      password:    input.password,
+      maxPages:    input.maxPages,
+      maxDepth:    input.maxDepth,
+    }));
+  } catch (err) {
+    res.status(500).json({ error: `Failed to create config files: ${(err as Error).message}` });
+    return;
+  }
+
   const runId = generateRunId("W");
   const scriptPath = path.resolve(__dirname, "ai-test.ts");
-  const argv = [
-    "vite-node", scriptPath,
-    "workflow",
-    "--input", projectPath,
-    "--skip-preflight",
-  ];
-  if (input.overwritePom) argv.push("--overwrite-pom");
+  const argv = ["vite-node", scriptPath, "workflow", "--input",
+    path.resolve(rootDir, projectFile), "--skip-preflight"];
 
   const env: NodeJS.ProcessEnv = { ...process.env };
   env.AI_TEST_DEFAULT_PROVIDER = input.provider;
-
-  // If an auth file override is provided, inject via env so bootstrap can pick it up
-  if (input.authFile) {
-    env.SITE_AUTH_RECIPE = path.resolve(rootDir, input.authFile);
-  }
+  if (input.username) env.SITE_USERNAME = input.username;
+  if (input.password) env.SITE_PASSWORD = input.password;
 
   const child = spawn("npx", argv, {
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-    shell: false,
-    cwd: rootDir,
+    env, stdio: ["ignore", "pipe", "pipe"], shell: false, cwd: rootDir,
   });
 
   const record: RunRecord = {
@@ -170,21 +246,22 @@ app.post("/run", (req, res) => {
   };
   runs.set(runId, record);
 
+  const fileInfo = [
+    `[INIT] Project file: ${projectFile}`,
+    authFile ? `[INIT] Auth recipe:   ${authFile}` : "[INIT] Auth: anonymous (no credentials)",
+  ].join("\n");
+  broadcast(record, fileInfo);
+
   const onChunk = (chunk: Buffer) => {
-    for (const line of chunk.toString().split("\n")) {
+    for (const line of chunk.toString().split("\n"))
       if (line.trim()) broadcast(record, line);
-    }
   };
   child.stdout!.on("data", onChunk);
   child.stderr!.on("data", onChunk);
+  child.on("exit", code => finishRun(record, code ?? -1));
+  child.on("error", err => { broadcast(record, `[ERROR] ${err.message}`); finishRun(record, -1); });
 
-  child.on("exit", code => finishRun(record, code ?? -1, "exit"));
-  child.on("error", err => {
-    broadcast(record, `[ERROR] ${err.message}`);
-    finishRun(record, -1, "exit");
-  });
-
-  res.status(202).json({ runId });
+  res.status(202).json({ runId, projectFile, authFile });
 });
 
 // ── POST /stop/:runId ─────────────────────────────────────────────────────────
@@ -192,11 +269,11 @@ app.post("/stop/:runId", (req, res) => {
   const run = runs.get(req.params.runId);
   if (!run) { res.status(404).json({ error: "Run not found" }); return; }
   if (run.status !== "running") { res.status(400).json({ error: "Run is not active" }); return; }
-
+  run.status = "stopped";
   broadcast(run, "[STOPPED] Run cancelled by user.");
   run.child.kill("SIGTERM");
-  setTimeout(() => { if (run.status === "running") run.child.kill("SIGKILL"); }, 5000);
-  finishRun(run, -1, "stopped");
+  setTimeout(() => { if (run.status === "stopped") run.child.kill("SIGKILL"); }, 5000);
+  finishRun(run, -1);
   res.json({ ok: true });
 });
 
@@ -212,13 +289,10 @@ app.get("/stream/:runId", (req, res) => {
   res.flushHeaders();
 
   for (const line of run.logBuffer) sseWrite(res, line);
-
   if (run.status !== "running") {
     sseWrite(res, `[DONE] exitCode=${run.exitCode ?? -1}`);
-    res.end();
-    return;
+    res.end(); return;
   }
-
   run.subscribers.add(res);
   req.on("close", () => run.subscribers.delete(res));
 });
@@ -228,29 +302,24 @@ app.get("/reports", async (_req, res) => {
   const htmlDir = path.join(rootDir, "reports", "html");
   const results: { runId: string; url: string }[] = [];
   try {
-    for (const runId of await readdir(htmlDir)) {
-      if (existsSync(path.join(htmlDir, runId, "index.html"))) {
+    for (const runId of await readdir(htmlDir))
+      if (existsSync(path.join(htmlDir, runId, "index.html")))
         results.push({ runId, url: `/report-files/${runId}/index.html` });
-      }
-    }
-  } catch { /* reports dir may not exist yet */ }
+  } catch { /* not yet */ }
   results.sort((a, b) => b.runId.localeCompare(a.runId));
   res.json(results);
 });
 
-// ── Static report files ───────────────────────────────────────────────────────
 app.use("/report-files", express.static(path.join(rootDir, "reports", "html")));
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = Number(process.env.PORT ?? 4000);
 const HOST = process.env.HOST ?? "127.0.0.1";
 app.listen(PORT, HOST, () => {
-  process.stdout.write(`\n  🤖  AI Test Web UI\n`);
-  process.stdout.write(`  →  http://${HOST}:${PORT}\n`);
-  process.stdout.write(`  Set HOST=0.0.0.0 to expose on network\n\n`);
+  process.stdout.write(`\n  🤖  AI Test Web UI\n  →  http://${HOST}:${PORT}\n\n`);
 });
 
-// ─── Embedded single-page HTML ────────────────────────────────────────────────
+// ─── Page HTML ────────────────────────────────────────────────────────────────
 
 const PAGE_HTML = /* html */`<!doctype html>
 <html lang="en">
@@ -263,386 +332,368 @@ const PAGE_HTML = /* html */`<!doctype html>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <style>
     :root {
-      --bg-app:#f8fafc; --bg-card:#fff; --color-text:#0f172a;
-      --color-text-muted:#64748b; --color-ok:#10b981; --color-ko:#ef4444;
-      --color-warn:#f59e0b;
-      --color-info:#3b82f6; --color-info-bg:#e8f0fe; --color-info-text:#1a73e8;
-      --color-sk-bg:#f1f5f9; --color-sk-text:#475569;
-      --border-color:#e2e8f0; --shadow-sm:0 1px 2px rgba(0,0,0,.05);
-      --shadow-md:0 4px 6px -1px rgba(0,0,0,.07);
-      --font-family:'Plus Jakarta Sans',system-ui,sans-serif;
+      --bg-app:#f8fafc;--bg-card:#fff;--color-text:#0f172a;
+      --color-muted:#64748b;--color-ok:#10b981;--color-ko:#ef4444;
+      --color-warn:#f59e0b;--color-info:#3b82f6;
+      --color-info-bg:#e8f0fe;--color-info-text:#1a73e8;
+      --color-sk-bg:#f1f5f9;--border:#e2e8f0;
+      --shadow-sm:0 1px 2px rgba(0,0,0,.05);
+      --font:'Plus Jakarta Sans',system-ui,sans-serif;
     }
     @media(prefers-color-scheme:dark){
-      :root{
-        --bg-app:#090d16; --bg-card:#111827; --color-text:#f3f4f6;
-        --color-text-muted:#9ca3af; --color-info-bg:rgba(96,165,250,.1);
-        --color-info-text:#60a5fa; --color-sk-bg:rgba(156,163,175,.1);
-        --color-sk-text:#e5e7eb; --border-color:#1f2937;
-      }
+      :root{--bg-app:#090d16;--bg-card:#111827;--color-text:#f3f4f6;
+        --color-muted:#9ca3af;--color-info-bg:rgba(96,165,250,.1);
+        --color-info-text:#60a5fa;--color-sk-bg:rgba(156,163,175,.1);--border:#1f2937;}
     }
     *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:var(--font-family);background:var(--bg-app);color:var(--color-text);
+    body{font-family:var(--font);background:var(--bg-app);color:var(--color-text);
       line-height:1.5;-webkit-font-smoothing:antialiased}
 
-    /* Header */
-    .hdr{background:rgba(255,255,255,.85);border-bottom:1px solid var(--border-color);
-      position:sticky;top:0;z-index:100;backdrop-filter:blur(12px);padding:16px 32px}
+    .hdr{background:rgba(255,255,255,.85);border-bottom:1px solid var(--border);
+      position:sticky;top:0;z-index:100;backdrop-filter:blur(12px);padding:14px 32px}
     @media(prefers-color-scheme:dark){.hdr{background:rgba(17,24,39,.85)}}
     .hdr-inner{max-width:1280px;margin:0 auto;display:flex;align-items:center;gap:12px}
-    .hdr h1{font-size:1.25rem;font-weight:700;letter-spacing:-.025em}
-    .hdr .sub{font-size:.8rem;color:var(--color-text-muted);margin-top:2px}
+    .hdr h1{font-size:1.2rem;font-weight:700;letter-spacing:-.02em}
+    .hdr .sub{font-size:.78rem;color:var(--color-muted);margin-top:1px}
 
-    /* Main */
-    .main{max-width:1280px;margin:0 auto;padding:32px;
-      display:grid;grid-template-columns:420px 1fr;gap:24px;align-items:start}
-    @media(max-width:860px){.main{grid-template-columns:1fr}}
+    .main{max-width:1280px;margin:0 auto;padding:28px 32px;
+      display:grid;grid-template-columns:400px 1fr;gap:24px;align-items:start}
+    @media(max-width:860px){.main{grid-template-columns:1fr;padding:20px 16px}}
 
-    /* Panel */
-    .panel{background:var(--bg-card);border:1px solid var(--border-color);
-      border-radius:12px;padding:24px;box-shadow:var(--shadow-sm)}
-    .panel-title{font-size:1rem;font-weight:700;margin-bottom:20px;
-      padding-bottom:12px;border-bottom:1px solid var(--border-color);
+    .panel{background:var(--bg-card);border:1px solid var(--border);
+      border-radius:12px;padding:22px;box-shadow:var(--shadow-sm)}
+    .panel-title{font-size:.95rem;font-weight:700;margin-bottom:18px;
+      padding-bottom:12px;border-bottom:1px solid var(--border);
       display:flex;justify-content:space-between;align-items:center}
 
-    /* Form fields */
-    .field{margin-bottom:16px}
-    .field label{display:block;font-size:.78rem;font-weight:700;
-      color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
-    .field select,.field input[type=checkbox]{width:100%;padding:10px 12px;
-      border:1px solid var(--border-color);border-radius:8px;
-      font-family:var(--font-family);font-size:.9rem;
+    /* Section headers inside form */
+    .section-label{font-size:.7rem;font-weight:700;text-transform:uppercase;
+      letter-spacing:.07em;color:var(--color-muted);margin:18px 0 10px;
+      display:flex;align-items:center;gap:8px}
+    .section-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
+    .field{margin-bottom:12px}
+    .field label{display:block;font-size:.77rem;font-weight:600;
+      color:var(--color-muted);margin-bottom:5px}
+    .field input,.field select{width:100%;padding:9px 11px;
+      border:1px solid var(--border);border-radius:7px;
+      font-family:var(--font);font-size:.875rem;
       background:var(--bg-card);color:var(--color-text);outline:none;
-      transition:border-color .15s,box-shadow .15s;cursor:pointer}
-    .field select:focus{border-color:var(--color-info);box-shadow:0 0 0 3px var(--color-info-bg)}
-    .field select:disabled{opacity:.5;cursor:not-allowed}
+      transition:border-color .15s,box-shadow .15s}
+    .field input:focus,.field select:focus{
+      border-color:var(--color-info);box-shadow:0 0 0 3px var(--color-info-bg)}
+    .field input::placeholder{color:var(--color-muted);opacity:.7}
+    .field .hint{font-size:.72rem;color:var(--color-muted);margin-top:4px}
+    .field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 
-    /* File select with refresh */
-    .file-select-row{display:flex;gap:8px}
-    .file-select-row select{flex:1}
-    .btn-refresh{padding:0 10px;border:1px solid var(--border-color);border-radius:8px;
-      background:var(--bg-card);color:var(--color-text-muted);cursor:pointer;
-      font-size:1rem;transition:background .15s;flex-shrink:0}
-    .btn-refresh:hover{background:var(--color-sk-bg)}
-
-    /* Checkbox row */
-    .check-row{display:flex;align-items:center;gap:8px;font-size:.875rem;font-weight:500;
-      cursor:pointer}
-    .check-row input{width:16px;height:16px;cursor:pointer;accent-color:var(--color-info)}
-
-    /* Empty state hint */
-    .select-hint{font-size:.75rem;color:var(--color-text-muted);margin-top:4px}
-
-    /* Action buttons row */
-    .btn-row{display:flex;gap:10px;margin-top:8px}
-    .btn-run{flex:1;padding:12px;border-radius:8px;border:none;
-      background:var(--color-info);color:#fff;font-family:var(--font-family);
-      font-size:.925rem;font-weight:700;cursor:pointer;
+    .btn-row{display:flex;gap:10px;margin-top:16px}
+    .btn-run{flex:1;padding:11px;border-radius:8px;border:none;
+      background:var(--color-info);color:#fff;font-family:var(--font);
+      font-size:.9rem;font-weight:700;cursor:pointer;
       display:flex;align-items:center;justify-content:center;gap:8px;
-      transition:opacity .2s,transform .1s}
+      transition:opacity .2s}
     .btn-run:hover{opacity:.88}
-    .btn-run:active{transform:scale(.98)}
     .btn-run:disabled{opacity:.45;cursor:not-allowed}
-    .btn-stop{padding:12px 16px;border-radius:8px;border:1px solid var(--color-ko);
-      background:rgba(239,68,68,.08);color:var(--color-ko);font-family:var(--font-family);
-      font-size:.925rem;font-weight:700;cursor:pointer;
-      display:none;align-items:center;justify-content:center;gap:6px;
-      transition:background .15s}
+    .btn-stop{padding:11px 14px;border-radius:8px;
+      border:1px solid var(--color-ko);background:rgba(239,68,68,.08);
+      color:var(--color-ko);font-family:var(--font);font-size:.9rem;font-weight:700;
+      cursor:pointer;display:none;align-items:center;gap:6px;transition:background .15s}
     .btn-stop:hover{background:rgba(239,68,68,.16)}
-    .btn-stop.visible{display:flex}
+    .btn-stop.show{display:flex}
 
-    /* Spinner */
     @keyframes spin{to{transform:rotate(360deg)}}
-    .spinner{width:15px;height:15px;border:2px solid rgba(255,255,255,.35);
+    .spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
       border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
 
+    /* Files generated notice */
+    .files-notice{margin-top:12px;padding:10px 12px;border-radius:7px;
+      background:var(--color-sk-bg);border:1px solid var(--border);
+      font-size:.78rem;color:var(--color-muted);display:none}
+    .files-notice code{font-family:monospace;color:var(--color-info-text)}
+
     /* Right panel */
-    .log-panel .panel-title{font-size:1rem}
-    .status-dot{width:9px;height:9px;border-radius:50%;background:var(--border-color);
-      transition:background .3s}
-    .status-dot.running{background:var(--color-warn);animation:pulse 1s ease-in-out infinite}
-    .status-dot.done{background:var(--color-ok)}
-    .status-dot.error,.status-dot.stopped{background:var(--color-ko)}
+    .log-panel .panel-title{font-size:.95rem}
+    .dot{width:9px;height:9px;border-radius:50%;background:var(--border);transition:background .3s}
+    .dot.running{background:var(--color-warn);animation:pulse 1s ease-in-out infinite}
+    .dot.done{background:var(--color-ok)}
+    .dot.error,.dot.stopped{background:var(--color-ko)}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
-    #log-placeholder{color:#30363d;font-family:ui-monospace,monospace;font-size:.78rem;
-      height:460px;display:flex;align-items:center;justify-content:center;
+    #log-ph{color:#484f58;font-family:ui-monospace,monospace;font-size:.78rem;
+      height:440px;display:flex;align-items:center;justify-content:center;
       border:1px solid #30363d;border-radius:8px;background:#0d1117}
-    #log-output{background:#0d1117;color:#7ee787;
+    #log{background:#0d1117;color:#7ee787;
       font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace;
-      font-size:.78rem;line-height:1.7;padding:16px;border-radius:8px;
-      height:460px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;
+      font-size:.77rem;line-height:1.7;padding:14px;border-radius:8px;
+      height:440px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;
       border:1px solid #30363d;display:none}
 
-    /* Report button */
-    .btn-report{display:none;margin-top:14px;padding:10px 16px;border-radius:8px;
-      border:1px solid var(--color-ok);background:rgba(16,185,129,.1);color:var(--color-ok);
-      font-family:var(--font-family);font-size:.875rem;font-weight:700;
-      text-decoration:none;align-items:center;gap:8px;transition:background .15s}
+    .btn-report{display:none;margin-top:12px;padding:9px 14px;border-radius:8px;
+      border:1px solid var(--color-ok);background:rgba(16,185,129,.1);
+      color:var(--color-ok);font-family:var(--font);font-size:.85rem;font-weight:700;
+      text-decoration:none;align-items:center;gap:7px;transition:background .15s}
     .btn-report:hover{background:rgba(16,185,129,.2)}
-    .btn-report.visible{display:inline-flex}
+    .btn-report.show{display:inline-flex}
 
-    /* Recent reports */
-    .reports-section{margin-top:20px}
-    .reports-title{font-size:.72rem;font-weight:700;text-transform:uppercase;
-      letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:8px}
-    .report-list{display:flex;flex-direction:column;gap:5px}
-    .report-item{display:flex;align-items:center;justify-content:space-between;
-      padding:7px 12px;border:1px solid var(--border-color);border-radius:8px;
-      font-size:.8rem}
-    .report-item a{color:var(--color-info-text);text-decoration:none;font-weight:600}
-    .report-item a:hover{text-decoration:underline}
-    .report-id{color:var(--color-text-muted);font-family:monospace;font-size:.73rem}
+    .recent{margin-top:18px}
+    .recent-title{font-size:.7rem;font-weight:700;text-transform:uppercase;
+      letter-spacing:.07em;color:var(--color-muted);margin-bottom:8px}
+    .ri{display:flex;align-items:center;justify-content:space-between;
+      padding:6px 10px;border:1px solid var(--border);border-radius:7px;
+      font-size:.78rem;margin-bottom:5px}
+    .ri a{color:var(--color-info-text);text-decoration:none;font-weight:600}
+    .ri a:hover{text-decoration:underline}
+    .ri-id{font-family:monospace;font-size:.72rem;color:var(--color-muted)}
 
-    .ftr{margin-top:48px;border-top:1px solid var(--border-color);
-      padding:20px 32px;font-size:.8rem;color:var(--color-text-muted);text-align:center}
+    .ftr{margin-top:40px;border-top:1px solid var(--border);
+      padding:16px 32px;font-size:.78rem;color:var(--color-muted);text-align:center}
   </style>
 </head>
 <body>
-  <header class="hdr">
-    <div class="hdr-inner">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-        <rect width="24" height="24" rx="6" fill="#3b82f6"/>
-        <path d="M7 12h2l2-4 2 8 2-4h2" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-      <div>
-        <h1>AI Test Web UI</h1>
-        <div class="sub">Crawl → Generate TCs → Run → HTML Report</div>
-      </div>
+<header class="hdr">
+  <div class="hdr-inner">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+      <rect width="24" height="24" rx="6" fill="#3b82f6"/>
+      <path d="M7 12h2l2-4 2 8 2-4h2" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <h1>AI Test Web UI</h1>
+      <div class="sub">Init project → Generate test cases → Run → Report</div>
     </div>
-  </header>
+  </div>
+</header>
 
-  <main class="main">
-    <!-- Config panel -->
-    <div class="panel">
-      <div class="panel-title">Configure Run</div>
-      <form id="run-form">
+<main class="main">
+  <!-- Left: form -->
+  <div class="panel">
+    <div class="panel-title">New Test Run</div>
+    <form id="form" autocomplete="off">
 
+      <div class="section-label">Project</div>
+
+      <div class="field">
+        <label>Project Name *</label>
+        <input name="projectName" type="text" placeholder="e.g. My App" required/>
+        <div class="hint">Used as folder name — e.g. <code>inputs/projects/my-app.yaml</code></div>
+      </div>
+
+      <div class="field">
+        <label>Base URL *</label>
+        <input name="baseUrl" type="url" placeholder="https://myapp.com" required/>
+      </div>
+
+      <div class="section-label">Authentication <span style="font-weight:400;text-transform:none;font-size:.8rem">(optional)</span></div>
+
+      <div class="field">
+        <label>Login URL</label>
+        <input name="loginUrl" type="url" placeholder="https://myapp.com/login  (blank = auto-detect)"/>
+        <div class="hint">Leave blank if login is on the base URL or site has no auth</div>
+      </div>
+
+      <div class="field">
+        <label>Role Name</label>
+        <input name="roleName" type="text" placeholder="authenticated" value="authenticated"/>
+      </div>
+
+      <div class="field-row">
         <div class="field">
-          <label>Project Config File *</label>
-          <div class="file-select-row">
-            <select name="projectFile" id="project-select" required>
-              <option value="">— select a project YAML —</option>
-            </select>
-            <button type="button" class="btn-refresh" onclick="loadFiles()" title="Refresh list">↺</button>
-          </div>
-          <div class="select-hint">Files in <code>inputs/projects/</code></div>
+          <label>Username</label>
+          <input name="username" type="text" placeholder="admin@example.com" autocomplete="off"/>
         </div>
-
         <div class="field">
-          <label>Auth Recipe File <span style="font-weight:400;text-transform:none">(optional)</span></label>
-          <div class="file-select-row">
-            <select name="authFile" id="auth-select">
-              <option value="">— none / use recipe in project YAML —</option>
-            </select>
-            <button type="button" class="btn-refresh" onclick="loadFiles()" title="Refresh list">↺</button>
-          </div>
-          <div class="select-hint">Files in <code>inputs/auth/</code></div>
+          <label>Password</label>
+          <input name="password" type="password" placeholder="••••••••" autocomplete="new-password"/>
         </div>
+      </div>
 
+      <div class="section-label">Settings</div>
+
+      <div class="field-row">
         <div class="field">
           <label>AI Provider</label>
           <select name="provider">
-            <option value="gemini">⭐ Gemini 2.5 Pro — Google AI Pro</option>
-            <option value="claude">Claude Sonnet 4.6 — Anthropic</option>
-            <option value="codex">GPT-4o — OpenAI</option>
-            <option value="opencode-ollama">Ollama (qwen2.5:14b) — Local / Offline</option>
-            <option value="mock">Mock — No API key (dev/test)</option>
+            <option value="gemini">⭐ Gemini 2.5 Pro</option>
+            <option value="claude">Claude Sonnet</option>
+            <option value="codex">GPT-4o</option>
+            <option value="opencode-ollama">Ollama (local)</option>
+            <option value="mock">Mock (no API)</option>
           </select>
         </div>
-
         <div class="field">
-          <label class="check-row">
-            <input type="checkbox" name="overwritePom"/>
-            Overwrite existing POM files
-          </label>
-        </div>
-
-        <div class="btn-row">
-          <button type="submit" class="btn-run" id="run-btn">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-            <span id="btn-label">Run Workflow</span>
-            <div class="spinner" id="spinner"></div>
-          </button>
-          <button type="button" class="btn-stop" id="stop-btn" onclick="stopRun()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
-            Stop
-          </button>
-        </div>
-      </form>
-    </div>
-
-    <!-- Log + report panel -->
-    <div class="panel log-panel">
-      <div class="panel-title">
-        <span>Live Output</span>
-        <div class="status-dot" id="status-dot"></div>
-      </div>
-
-      <div id="log-placeholder"><span>Waiting for run to start…</span></div>
-      <pre id="log-output"></pre>
-
-      <a class="btn-report" id="report-btn" href="#" target="_blank">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
-        View HTML Report →
-      </a>
-
-      <div class="reports-section">
-        <div class="reports-title">Recent Reports</div>
-        <div class="report-list" id="report-list">
-          <div style="color:var(--color-text-muted);font-size:.8rem;padding:4px 0">No reports yet.</div>
+          <label>Max Pages</label>
+          <input name="maxPages" type="number" value="10" min="1" max="200"/>
         </div>
       </div>
+
+      <div class="btn-row">
+        <button type="submit" class="btn-run" id="run-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          <span id="btn-label">Run Workflow</span>
+          <div class="spinner" id="spinner"></div>
+        </button>
+        <button type="button" class="btn-stop" id="stop-btn" onclick="stopRun()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
+          Stop
+        </button>
+      </div>
+
+      <div class="files-notice" id="files-notice">
+        <strong>Generated config files:</strong><br/>
+        <span id="files-list"></span>
+      </div>
+    </form>
+  </div>
+
+  <!-- Right: log + reports -->
+  <div class="panel log-panel">
+    <div class="panel-title">
+      Live Output
+      <div class="dot" id="dot"></div>
     </div>
-  </main>
 
-  <footer class="ftr">
-    Powered by <strong>ai-automation-framework</strong>
-  </footer>
+    <div id="log-ph"><span>Waiting for run to start…</span></div>
+    <pre id="log"></pre>
 
-  <script>
-    const form      = document.getElementById('run-form');
-    const logEl     = document.getElementById('log-output');
-    const logPH     = document.getElementById('log-placeholder');
-    const reportBtn = document.getElementById('report-btn');
-    const stopBtn   = document.getElementById('stop-btn');
-    const spinner   = document.getElementById('spinner');
-    const btnLabel  = document.getElementById('btn-label');
-    const dot       = document.getElementById('status-dot');
-    let es = null;
-    let currentRunId = null;
+    <a class="btn-report" id="report-btn" href="#" target="_blank">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+      View HTML Report →
+    </a>
 
-    // ── Boot ──────────────────────────────────────────────────────────────────
-    loadFiles();
-    loadReports();
+    <div class="recent">
+      <div class="recent-title">Recent Reports</div>
+      <div id="report-list"><div style="color:var(--color-muted);font-size:.78rem">No reports yet.</div></div>
+    </div>
+  </div>
+</main>
 
-    async function loadFiles() {
-      const [projects, auths] = await Promise.all([
-        fetch('/input-files/projects').then(r => r.json()).catch(() => []),
-        fetch('/input-files/auth').then(r => r.json()).catch(() => []),
-      ]);
-      populateSelect('project-select', projects, '— select a project YAML —');
-      populateSelect('auth-select', auths, '— none / use recipe in project YAML —');
-    }
+<footer class="ftr">Powered by <strong>ai-automation-framework</strong></footer>
 
-    function populateSelect(id, files, placeholder) {
-      const sel = document.getElementById(id);
-      const prev = sel.value;
-      sel.innerHTML = '<option value="">' + placeholder + '</option>';
-      files.forEach(f => {
-        const opt = document.createElement('option');
-        opt.value = 'inputs/' + id.replace('project-select','projects').replace('auth-select','auth') + '/' + f;
-        opt.textContent = f;
-        if (opt.value === prev) opt.selected = true;
-        sel.appendChild(opt);
+<script>
+  const form      = document.getElementById('form');
+  const logEl     = document.getElementById('log');
+  const logPH     = document.getElementById('log-ph');
+  const reportBtn = document.getElementById('report-btn');
+  const stopBtn   = document.getElementById('stop-btn');
+  const spinner   = document.getElementById('spinner');
+  const btnLabel  = document.getElementById('btn-label');
+  const dot       = document.getElementById('dot');
+  const notice    = document.getElementById('files-notice');
+  const filesList = document.getElementById('files-list');
+  let es = null, currentRunId = null;
+
+  loadReports();
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    setRunning(true);
+    logEl.textContent = '';
+    logPH.style.display = 'none';
+    logEl.style.display = 'block';
+    reportBtn.classList.remove('show');
+    notice.style.display = 'none';
+    dot.className = 'dot running';
+
+    const body = {
+      projectName: form.projectName.value.trim(),
+      baseUrl:     form.baseUrl.value.trim(),
+      loginUrl:    form.loginUrl.value.trim() || undefined,
+      roleName:    form.roleName.value.trim() || 'authenticated',
+      username:    form.username.value.trim() || undefined,
+      password:    form.password.value || undefined,
+      provider:    form.provider.value,
+      maxPages:    Number(form.maxPages.value),
+      maxDepth:    3,
+    };
+
+    let res;
+    try {
+      res = await fetch('/run', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body),
       });
+    } catch (err) {
+      appendLog('[ERROR] Cannot reach server: ' + err.message);
+      setRunning(false); dot.className = 'dot error'; return;
     }
 
-    // ── Submit ────────────────────────────────────────────────────────────────
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const projectFile = form.projectFile.value;
-      if (!projectFile) { alert('Please select a project config file.'); return; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({error: res.statusText}));
+      appendLog('[ERROR] ' + err.error);
+      setRunning(false); dot.className = 'dot error'; return;
+    }
 
-      setRunning(true);
-      logEl.textContent = '';
-      logPH.style.display = 'none';
-      logEl.style.display = 'block';
-      reportBtn.classList.remove('visible');
-      dot.className = 'status-dot running';
+    const data = await res.json();
+    currentRunId = data.runId;
 
-      const body = {
-        projectFile,
-        authFile:    form.authFile.value || undefined,
-        provider:    form.provider.value,
-        overwritePom: form.overwritePom.checked,
-      };
+    // Show generated file paths
+    const lines = [data.projectFile, data.authFile].filter(Boolean).map(f => '<code>' + f + '</code>').join('<br/>');
+    filesList.innerHTML = lines;
+    notice.style.display = 'block';
 
-      let res;
-      try {
-        res = await fetch('/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-      } catch (err) {
-        appendLog('[ERROR] Cannot reach server: ' + err.message);
-        setRunning(false); dot.className = 'status-dot error'; return;
+    connectSSE(data.runId);
+  });
+
+  function connectSSE(runId) {
+    if (es) es.close();
+    es = new EventSource('/stream/' + runId);
+    es.onmessage = (event) => {
+      const line = event.data;
+      if (line.startsWith('[DONE]')) {
+        const code = parseInt(line.match(/exitCode=(-?\\d+)/)?.[1] ?? '-1', 10);
+        setRunning(false);
+        dot.className = 'dot ' + (code === 0 ? 'done' : 'error');
+        if (code === 0) showReport(runId);
+        loadReports();
+        es.close(); return;
       }
+      appendLog(line);
+    };
+    es.onerror = () => {
+      appendLog('[Connection lost]');
+      setRunning(false); dot.className = 'dot error'; es.close();
+    };
+  }
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        appendLog('[ERROR] ' + err.error);
-        setRunning(false); dot.className = 'status-dot error'; return;
-      }
+  async function stopRun() {
+    if (!currentRunId) return;
+    await fetch('/stop/' + currentRunId, {method:'POST'}).catch(()=>{});
+    dot.className = 'dot stopped';
+    setRunning(false);
+    if (es) { es.close(); es = null; }
+  }
 
-      const { runId } = await res.json();
-      currentRunId = runId;
-      connectSSE(runId);
-    });
+  function appendLog(line) {
+    logEl.textContent += line + '\\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
 
-    // ── SSE ───────────────────────────────────────────────────────────────────
-    function connectSSE(runId) {
-      if (es) es.close();
-      es = new EventSource('/stream/' + runId);
-      es.onmessage = (event) => {
-        const line = event.data;
-        if (line.startsWith('[DONE]')) {
-          const code = parseInt(line.match(/exitCode=(-?\\d+)/)?.[1] ?? '-1', 10);
-          setRunning(false);
-          dot.className = 'status-dot ' + (code === 0 ? 'done' : 'error');
-          if (code === 0) showReport(runId);
-          loadReports();
-          es.close(); return;
-        }
-        appendLog(line);
-      };
-      es.onerror = () => {
-        appendLog('[Connection lost]');
-        setRunning(false); dot.className = 'status-dot error'; es.close();
-      };
+  function setRunning(running) {
+    form.querySelectorAll('input,select,button[type=submit]').forEach(el => el.disabled = running);
+    spinner.style.display = running ? 'block' : 'none';
+    btnLabel.textContent  = running ? 'Running…' : 'Run Workflow';
+    stopBtn.classList.toggle('show', running);
+  }
+
+  async function showReport(runId) {
+    const reports = await fetch('/reports').then(r => r.json()).catch(() => []);
+    const r = reports.find(r => r.runId === runId);
+    if (r) { reportBtn.href = r.url; reportBtn.classList.add('show'); }
+  }
+
+  async function loadReports() {
+    const reports = await fetch('/reports').then(r => r.json()).catch(() => []);
+    const list = document.getElementById('report-list');
+    if (!reports.length) {
+      list.innerHTML = '<div style="color:var(--color-muted);font-size:.78rem">No reports yet.</div>';
+      return;
     }
-
-    // ── Stop ─────────────────────────────────────────────────────────────────
-    async function stopRun() {
-      if (!currentRunId) return;
-      await fetch('/stop/' + currentRunId, { method: 'POST' }).catch(() => {});
-      dot.className = 'status-dot stopped';
-      setRunning(false);
-      if (es) { es.close(); es = null; }
-    }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-    function appendLog(line) {
-      logEl.textContent += line + '\\n';
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    function setRunning(running) {
-      form.querySelectorAll('select, button[type=submit]').forEach(el => el.disabled = running);
-      spinner.style.display = running ? 'block' : 'none';
-      btnLabel.textContent  = running ? 'Running…' : 'Run Workflow';
-      stopBtn.classList.toggle('visible', running);
-    }
-
-    async function showReport(runId) {
-      const reports = await fetch('/reports').then(r => r.json()).catch(() => []);
-      const r = reports.find(r => r.runId === runId);
-      if (r) { reportBtn.href = r.url; reportBtn.classList.add('visible'); }
-    }
-
-    async function loadReports() {
-      const reports = await fetch('/reports').then(r => r.json()).catch(() => []);
-      const list = document.getElementById('report-list');
-      if (!reports.length) {
-        list.innerHTML = '<div style="color:var(--color-text-muted);font-size:.8rem;padding:4px 0">No reports yet.</div>';
-        return;
-      }
-      list.innerHTML = reports.slice(0, 8).map(r => \`
-        <div class="report-item">
-          <span class="report-id">\${r.runId}</span>
-          <a href="\${r.url}" target="_blank">View →</a>
-        </div>\`).join('');
-    }
-  </script>
+    list.innerHTML = reports.slice(0, 8).map(r => \`
+      <div class="ri">
+        <span class="ri-id">\${r.runId}</span>
+        <a href="\${r.url}" target="_blank">View →</a>
+      </div>\`).join('');
+  }
+</script>
 </body>
 </html>`;
