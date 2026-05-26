@@ -1,16 +1,19 @@
 /**
- * Web UI — thin Express wrapper around `ai-test quick`.
+ * Web UI — Express wrapper around `ai-test workflow`.
  *
  * Usage:
  *   npm run web-ui
  *   PORT=8080 npm run web-ui
  *
  * Routes:
- *   GET  /              → single-page form UI
- *   POST /run           → spawn workflow, return { runId }
- *   GET  /stream/:id    → SSE log stream
- *   GET  /reports       → JSON list of completed HTML reports
- *   GET  /report-files/ → static HTML report files
+ *   GET  /                      → single-page UI
+ *   GET  /input-files/projects  → list inputs/projects/*.yaml
+ *   GET  /input-files/auth      → list inputs/auth/*.yaml
+ *   POST /run                   → spawn workflow, return { runId }
+ *   POST /stop/:runId           → SIGTERM child process
+ *   GET  /stream/:id            → SSE live log stream
+ *   GET  /reports               → JSON list of HTML reports
+ *   GET  /report-files/         → static HTML report files
  */
 import "dotenv/config";
 import express from "express";
@@ -31,7 +34,7 @@ const rootDir   = path.resolve(__dirname, "..");
 
 interface RunRecord {
   id: string;
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "stopped";
   exitCode: number | null;
   startedAt: Date;
   logBuffer: string[];
@@ -40,10 +43,9 @@ interface RunRecord {
 }
 
 const runs = new Map<string, RunRecord>();
-const MAX_CONCURRENT  = 3;
+const MAX_CONCURRENT   = 3;
 const MAX_BUFFER_LINES = 2000;
 
-// Prune finished runs older than 1 hour every 5 min
 setInterval(() => {
   const cutoff = Date.now() - 60 * 60 * 1000;
   for (const [id, r] of runs) {
@@ -68,15 +70,30 @@ function broadcast(run: RunRecord, line: string) {
   for (const sub of run.subscribers) sseWrite(sub, clean);
 }
 
-// ─── Input schema ─────────────────────────────────────────────────────────────
+function finishRun(run: RunRecord, exitCode: number, label: string) {
+  run.status = exitCode === 0 ? "done" : label === "stopped" ? "stopped" : "error";
+  run.exitCode = exitCode;
+  for (const sub of run.subscribers) {
+    sseWrite(sub, `[DONE] exitCode=${exitCode}`);
+    sub.end();
+  }
+  run.subscribers.clear();
+}
+
+async function listYamlFiles(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir);
+    return entries.filter(f => f.endsWith(".yaml") || f.endsWith(".yml")).sort();
+  } catch { return []; }
+}
+
+// ─── Input schemas ────────────────────────────────────────────────────────────
 
 const RunSchema = z.object({
-  url:       z.string().url(),
-  username:  z.string().max(256).optional(),
-  password:  z.string().max(1024).optional(),
-  provider:  z.enum(["gemini", "claude", "codex", "opencode-ollama", "mock"]).default("gemini"),
-  maxPages:  z.number().int().min(1).max(200).default(10),
-  maxDepth:  z.number().int().min(0).max(10).default(3),
+  projectFile: z.string().min(1),                           // e.g. "inputs/projects/my-app.yaml"
+  authFile:    z.string().optional(),                       // e.g. "inputs/auth/my-app.yaml"
+  provider:    z.enum(["gemini","claude","codex","opencode-ollama","mock"]).default("gemini"),
+  overwritePom: z.boolean().default(false),
 });
 
 // ─── Express app ──────────────────────────────────────────────────────────────
@@ -88,6 +105,18 @@ app.use(express.json());
 // ── GET / ─────────────────────────────────────────────────────────────────────
 app.get("/", (_req, res) => res.send(PAGE_HTML));
 
+// ── GET /input-files/projects ─────────────────────────────────────────────────
+app.get("/input-files/projects", async (_req, res) => {
+  const files = await listYamlFiles(path.join(rootDir, "inputs", "projects"));
+  res.json(files);
+});
+
+// ── GET /input-files/auth ─────────────────────────────────────────────────────
+app.get("/input-files/auth", async (_req, res) => {
+  const files = await listYamlFiles(path.join(rootDir, "inputs", "auth"));
+  res.json(files);
+});
+
 // ── POST /run ─────────────────────────────────────────────────────────────────
 app.post("/run", (req, res) => {
   const parsed = RunSchema.safeParse(req.body);
@@ -97,23 +126,36 @@ app.post("/run", (req, res) => {
   }
   const input = parsed.data;
 
+  // Validate project file exists
+  const projectPath = path.resolve(rootDir, input.projectFile);
+  if (!existsSync(projectPath)) {
+    res.status(400).json({ error: `Project file not found: ${input.projectFile}` });
+    return;
+  }
+
   const running = [...runs.values()].filter(r => r.status === "running").length;
   if (running >= MAX_CONCURRENT) {
-    res.status(429).json({ error: "Too many concurrent runs. Try again shortly." });
+    res.status(429).json({ error: "Too many concurrent runs. Stop one first." });
     return;
   }
 
   const runId = generateRunId("W");
   const scriptPath = path.resolve(__dirname, "ai-test.ts");
-  const argv = ["vite-node", scriptPath, "quick", "--url", input.url, "--skip-preflight"];
-  if (input.username) argv.push("--username", input.username);
+  const argv = [
+    "vite-node", scriptPath,
+    "workflow",
+    "--input", projectPath,
+    "--skip-preflight",
+  ];
+  if (input.overwritePom) argv.push("--overwrite-pom");
 
   const env: NodeJS.ProcessEnv = { ...process.env };
   env.AI_TEST_DEFAULT_PROVIDER = input.provider;
-  env.WIZARD_MAX_PAGES = String(input.maxPages);
-  env.WIZARD_MAX_DEPTH = String(input.maxDepth);
-  if (input.username) env.SITE_USERNAME = input.username;
-  if (input.password) env.SITE_PASSWORD = input.password;
+
+  // If an auth file override is provided, inject via env so bootstrap can pick it up
+  if (input.authFile) {
+    env.SITE_AUTH_RECIPE = path.resolve(rootDir, input.authFile);
+  }
 
   const child = spawn("npx", argv, {
     env,
@@ -128,25 +170,34 @@ app.post("/run", (req, res) => {
   };
   runs.set(runId, record);
 
-  const onLine = (chunk: Buffer) => {
+  const onChunk = (chunk: Buffer) => {
     for (const line of chunk.toString().split("\n")) {
-      if (line) broadcast(record, line);
+      if (line.trim()) broadcast(record, line);
     }
   };
-  child.stdout!.on("data", onLine);
-  child.stderr!.on("data", onLine);
+  child.stdout!.on("data", onChunk);
+  child.stderr!.on("data", onChunk);
 
-  child.on("exit", code => {
-    record.status = code === 0 ? "done" : "error";
-    record.exitCode = code ?? -1;
-    for (const sub of record.subscribers) {
-      sseWrite(sub, `[DONE] exitCode=${record.exitCode}`);
-      sub.end();
-    }
-    record.subscribers.clear();
+  child.on("exit", code => finishRun(record, code ?? -1, "exit"));
+  child.on("error", err => {
+    broadcast(record, `[ERROR] ${err.message}`);
+    finishRun(record, -1, "exit");
   });
 
   res.status(202).json({ runId });
+});
+
+// ── POST /stop/:runId ─────────────────────────────────────────────────────────
+app.post("/stop/:runId", (req, res) => {
+  const run = runs.get(req.params.runId);
+  if (!run) { res.status(404).json({ error: "Run not found" }); return; }
+  if (run.status !== "running") { res.status(400).json({ error: "Run is not active" }); return; }
+
+  broadcast(run, "[STOPPED] Run cancelled by user.");
+  run.child.kill("SIGTERM");
+  setTimeout(() => { if (run.status === "running") run.child.kill("SIGKILL"); }, 5000);
+  finishRun(run, -1, "stopped");
+  res.json({ ok: true });
 });
 
 // ── GET /stream/:runId ────────────────────────────────────────────────────────
@@ -214,6 +265,7 @@ const PAGE_HTML = /* html */`<!doctype html>
     :root {
       --bg-app:#f8fafc; --bg-card:#fff; --color-text:#0f172a;
       --color-text-muted:#64748b; --color-ok:#10b981; --color-ko:#ef4444;
+      --color-warn:#f59e0b;
       --color-info:#3b82f6; --color-info-bg:#e8f0fe; --color-info-text:#1a73e8;
       --color-sk-bg:#f1f5f9; --color-sk-text:#475569;
       --border-color:#e2e8f0; --shadow-sm:0 1px 2px rgba(0,0,0,.05);
@@ -229,7 +281,8 @@ const PAGE_HTML = /* html */`<!doctype html>
       }
     }
     *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:var(--font-family);background:var(--bg-app);color:var(--color-text);line-height:1.5;-webkit-font-smoothing:antialiased}
+    body{font-family:var(--font-family);background:var(--bg-app);color:var(--color-text);
+      line-height:1.5;-webkit-font-smoothing:antialiased}
 
     /* Header */
     .hdr{background:rgba(255,255,255,.85);border-bottom:1px solid var(--border-color);
@@ -239,86 +292,107 @@ const PAGE_HTML = /* html */`<!doctype html>
     .hdr h1{font-size:1.25rem;font-weight:700;letter-spacing:-.025em}
     .hdr .sub{font-size:.8rem;color:var(--color-text-muted);margin-top:2px}
 
-    /* Main grid */
-    .main{max-width:1280px;margin:0 auto;padding:32px;display:grid;
-      grid-template-columns:5fr 7fr;gap:24px;align-items:start}
-    @media(max-width:768px){.main{grid-template-columns:1fr}}
+    /* Main */
+    .main{max-width:1280px;margin:0 auto;padding:32px;
+      display:grid;grid-template-columns:420px 1fr;gap:24px;align-items:start}
+    @media(max-width:860px){.main{grid-template-columns:1fr}}
 
     /* Panel */
     .panel{background:var(--bg-card);border:1px solid var(--border-color);
       border-radius:12px;padding:24px;box-shadow:var(--shadow-sm)}
     .panel-title{font-size:1rem;font-weight:700;margin-bottom:20px;
-      padding-bottom:12px;border-bottom:1px solid var(--border-color)}
+      padding-bottom:12px;border-bottom:1px solid var(--border-color);
+      display:flex;justify-content:space-between;align-items:center}
 
-    /* Form */
+    /* Form fields */
     .field{margin-bottom:16px}
-    .field label{display:block;font-size:.8rem;font-weight:600;
+    .field label{display:block;font-size:.78rem;font-weight:700;
       color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
-    .field input,.field select{width:100%;padding:10px 12px;
+    .field select,.field input[type=checkbox]{width:100%;padding:10px 12px;
       border:1px solid var(--border-color);border-radius:8px;
       font-family:var(--font-family);font-size:.9rem;
       background:var(--bg-card);color:var(--color-text);outline:none;
-      transition:border-color .15s,box-shadow .15s}
-    .field input:focus,.field select:focus{
-      border-color:var(--color-info);box-shadow:0 0 0 3px var(--color-info-bg)}
-    .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+      transition:border-color .15s,box-shadow .15s;cursor:pointer}
+    .field select:focus{border-color:var(--color-info);box-shadow:0 0 0 3px var(--color-info-bg)}
+    .field select:disabled{opacity:.5;cursor:not-allowed}
 
-    /* Provider badges */
-    .provider-note{font-size:.75rem;color:var(--color-text-muted);margin-top:4px}
+    /* File select with refresh */
+    .file-select-row{display:flex;gap:8px}
+    .file-select-row select{flex:1}
+    .btn-refresh{padding:0 10px;border:1px solid var(--border-color);border-radius:8px;
+      background:var(--bg-card);color:var(--color-text-muted);cursor:pointer;
+      font-size:1rem;transition:background .15s;flex-shrink:0}
+    .btn-refresh:hover{background:var(--color-sk-bg)}
 
-    /* Run button */
-    .btn-run{width:100%;padding:12px;border-radius:8px;border:none;
+    /* Checkbox row */
+    .check-row{display:flex;align-items:center;gap:8px;font-size:.875rem;font-weight:500;
+      cursor:pointer}
+    .check-row input{width:16px;height:16px;cursor:pointer;accent-color:var(--color-info)}
+
+    /* Empty state hint */
+    .select-hint{font-size:.75rem;color:var(--color-text-muted);margin-top:4px}
+
+    /* Action buttons row */
+    .btn-row{display:flex;gap:10px;margin-top:8px}
+    .btn-run{flex:1;padding:12px;border-radius:8px;border:none;
       background:var(--color-info);color:#fff;font-family:var(--font-family);
-      font-size:.95rem;font-weight:700;cursor:pointer;
-      display:flex;align-items:center;justify-content:center;gap:10px;
-      transition:opacity .2s,transform .1s;margin-top:8px}
-    .btn-run:hover{opacity:.9}
+      font-size:.925rem;font-weight:700;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;gap:8px;
+      transition:opacity .2s,transform .1s}
+    .btn-run:hover{opacity:.88}
     .btn-run:active{transform:scale(.98)}
-    .btn-run:disabled{opacity:.5;cursor:not-allowed}
+    .btn-run:disabled{opacity:.45;cursor:not-allowed}
+    .btn-stop{padding:12px 16px;border-radius:8px;border:1px solid var(--color-ko);
+      background:rgba(239,68,68,.08);color:var(--color-ko);font-family:var(--font-family);
+      font-size:.925rem;font-weight:700;cursor:pointer;
+      display:none;align-items:center;justify-content:center;gap:6px;
+      transition:background .15s}
+    .btn-stop:hover{background:rgba(239,68,68,.16)}
+    .btn-stop.visible{display:flex}
 
     /* Spinner */
     @keyframes spin{to{transform:rotate(360deg)}}
-    .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);
+    .spinner{width:15px;height:15px;border:2px solid rgba(255,255,255,.35);
       border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
 
-    /* Terminal log */
-    .log-panel .panel-title{display:flex;justify-content:space-between;align-items:center}
-    .status-dot{width:8px;height:8px;border-radius:50%;background:var(--border-color)}
-    .status-dot.running{background:#f59e0b;animation:pulse 1s ease-in-out infinite}
+    /* Right panel */
+    .log-panel .panel-title{font-size:1rem}
+    .status-dot{width:9px;height:9px;border-radius:50%;background:var(--border-color);
+      transition:background .3s}
+    .status-dot.running{background:var(--color-warn);animation:pulse 1s ease-in-out infinite}
     .status-dot.done{background:var(--color-ok)}
-    .status-dot.error{background:var(--color-ko)}
-    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    .status-dot.error,.status-dot.stopped{background:var(--color-ko)}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+    #log-placeholder{color:#30363d;font-family:ui-monospace,monospace;font-size:.78rem;
+      height:460px;display:flex;align-items:center;justify-content:center;
+      border:1px solid #30363d;border-radius:8px;background:#0d1117}
     #log-output{background:#0d1117;color:#7ee787;
       font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace;
       font-size:.78rem;line-height:1.7;padding:16px;border-radius:8px;
-      height:480px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;
-      border:1px solid #30363d;margin-top:0}
-    #log-placeholder{color:#30363d;font-family:ui-monospace,monospace;font-size:.78rem;
-      padding:16px;height:480px;display:flex;align-items:center;justify-content:center;
-      border:1px solid #30363d;border-radius:8px;background:#0d1117}
+      height:460px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;
+      border:1px solid #30363d;display:none}
 
     /* Report button */
-    .btn-report{display:none;margin-top:14px;padding:10px 16px;
-      border-radius:8px;border:1px solid var(--color-ok);
-      background:rgba(16,185,129,.1);color:var(--color-ok);
+    .btn-report{display:none;margin-top:14px;padding:10px 16px;border-radius:8px;
+      border:1px solid var(--color-ok);background:rgba(16,185,129,.1);color:var(--color-ok);
       font-family:var(--font-family);font-size:.875rem;font-weight:700;
-      text-decoration:none;align-items:center;gap:8px;
-      transition:background .15s}
+      text-decoration:none;align-items:center;gap:8px;transition:background .15s}
     .btn-report:hover{background:rgba(16,185,129,.2)}
+    .btn-report.visible{display:inline-flex}
 
     /* Recent reports */
-    .reports-section{margin-top:24px}
-    .reports-title{font-size:.75rem;font-weight:700;text-transform:uppercase;
-      letter-spacing:.05em;color:var(--color-text-muted);margin-bottom:10px}
-    .report-list{display:flex;flex-direction:column;gap:6px}
+    .reports-section{margin-top:20px}
+    .reports-title{font-size:.72rem;font-weight:700;text-transform:uppercase;
+      letter-spacing:.06em;color:var(--color-text-muted);margin-bottom:8px}
+    .report-list{display:flex;flex-direction:column;gap:5px}
     .report-item{display:flex;align-items:center;justify-content:space-between;
-      padding:8px 12px;border:1px solid var(--border-color);border-radius:8px;
-      background:var(--bg-card);font-size:.8rem}
+      padding:7px 12px;border:1px solid var(--border-color);border-radius:8px;
+      font-size:.8rem}
     .report-item a{color:var(--color-info-text);text-decoration:none;font-weight:600}
     .report-item a:hover{text-decoration:underline}
-    .report-id{color:var(--color-text-muted);font-family:monospace;font-size:.75rem}
+    .report-id{color:var(--color-text-muted);font-family:monospace;font-size:.73rem}
 
-    /* Footer */
     .ftr{margin-top:48px;border-top:1px solid var(--border-color);
       padding:20px 32px;font-size:.8rem;color:var(--color-text-muted);text-align:center}
   </style>
@@ -338,25 +412,31 @@ const PAGE_HTML = /* html */`<!doctype html>
   </header>
 
   <main class="main">
-    <!-- Form panel -->
+    <!-- Config panel -->
     <div class="panel">
       <div class="panel-title">Configure Run</div>
-      <form id="run-form" autocomplete="off">
+      <form id="run-form">
 
         <div class="field">
-          <label>Web URL *</label>
-          <input type="url" name="url" placeholder="https://myapp.com" required/>
+          <label>Project Config File *</label>
+          <div class="file-select-row">
+            <select name="projectFile" id="project-select" required>
+              <option value="">— select a project YAML —</option>
+            </select>
+            <button type="button" class="btn-refresh" onclick="loadFiles()" title="Refresh list">↺</button>
+          </div>
+          <div class="select-hint">Files in <code>inputs/projects/</code></div>
         </div>
 
-        <div class="field-row">
-          <div class="field">
-            <label>Username</label>
-            <input type="text" name="username" placeholder="Leave blank for anonymous" autocomplete="off"/>
+        <div class="field">
+          <label>Auth Recipe File <span style="font-weight:400;text-transform:none">(optional)</span></label>
+          <div class="file-select-row">
+            <select name="authFile" id="auth-select">
+              <option value="">— none / use recipe in project YAML —</option>
+            </select>
+            <button type="button" class="btn-refresh" onclick="loadFiles()" title="Refresh list">↺</button>
           </div>
-          <div class="field">
-            <label>Password</label>
-            <input type="password" name="password" placeholder="••••••••" autocomplete="new-password"/>
-          </div>
+          <div class="select-hint">Files in <code>inputs/auth/</code></div>
         </div>
 
         <div class="field">
@@ -370,22 +450,24 @@ const PAGE_HTML = /* html */`<!doctype html>
           </select>
         </div>
 
-        <div class="field-row">
-          <div class="field">
-            <label>Max Pages</label>
-            <input type="number" name="maxPages" value="10" min="1" max="200"/>
-          </div>
-          <div class="field">
-            <label>Max Depth</label>
-            <input type="number" name="maxDepth" value="3" min="0" max="10"/>
-          </div>
+        <div class="field">
+          <label class="check-row">
+            <input type="checkbox" name="overwritePom"/>
+            Overwrite existing POM files
+          </label>
         </div>
 
-        <button type="submit" class="btn-run" id="run-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          <span id="btn-label">Run Full Workflow</span>
-          <div class="spinner" id="spinner"></div>
-        </button>
+        <div class="btn-row">
+          <button type="submit" class="btn-run" id="run-btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            <span id="btn-label">Run Workflow</span>
+            <div class="spinner" id="spinner"></div>
+          </button>
+          <button type="button" class="btn-stop" id="stop-btn" onclick="stopRun()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
+            Stop
+          </button>
+        </div>
       </form>
     </div>
 
@@ -396,10 +478,8 @@ const PAGE_HTML = /* html */`<!doctype html>
         <div class="status-dot" id="status-dot"></div>
       </div>
 
-      <div id="log-placeholder">
-        <span style="color:#484f58">Waiting for run to start…</span>
-      </div>
-      <pre id="log-output" style="display:none"></pre>
+      <div id="log-placeholder"><span>Waiting for run to start…</span></div>
+      <pre id="log-output"></pre>
 
       <a class="btn-report" id="report-btn" href="#" target="_blank">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
@@ -409,45 +489,72 @@ const PAGE_HTML = /* html */`<!doctype html>
       <div class="reports-section">
         <div class="reports-title">Recent Reports</div>
         <div class="report-list" id="report-list">
-          <div style="color:var(--color-text-muted);font-size:.8rem">No reports yet.</div>
+          <div style="color:var(--color-text-muted);font-size:.8rem;padding:4px 0">No reports yet.</div>
         </div>
       </div>
     </div>
   </main>
 
   <footer class="ftr">
-    Generated by <strong>ai-automation-framework</strong> &nbsp;·&nbsp; <a href="/reports" style="color:var(--color-info-text)">reports API</a>
+    Powered by <strong>ai-automation-framework</strong>
   </footer>
 
   <script>
-    const form     = document.getElementById('run-form');
-    const logEl    = document.getElementById('log-output');
-    const logPlaceholder = document.getElementById('log-placeholder');
+    const form      = document.getElementById('run-form');
+    const logEl     = document.getElementById('log-output');
+    const logPH     = document.getElementById('log-placeholder');
     const reportBtn = document.getElementById('report-btn');
-    const spinner  = document.getElementById('spinner');
-    const btnLabel = document.getElementById('btn-label');
-    const dot      = document.getElementById('status-dot');
+    const stopBtn   = document.getElementById('stop-btn');
+    const spinner   = document.getElementById('spinner');
+    const btnLabel  = document.getElementById('btn-label');
+    const dot       = document.getElementById('status-dot');
     let es = null;
+    let currentRunId = null;
 
-    // Load recent reports on mount
+    // ── Boot ──────────────────────────────────────────────────────────────────
+    loadFiles();
     loadReports();
 
+    async function loadFiles() {
+      const [projects, auths] = await Promise.all([
+        fetch('/input-files/projects').then(r => r.json()).catch(() => []),
+        fetch('/input-files/auth').then(r => r.json()).catch(() => []),
+      ]);
+      populateSelect('project-select', projects, '— select a project YAML —');
+      populateSelect('auth-select', auths, '— none / use recipe in project YAML —');
+    }
+
+    function populateSelect(id, files, placeholder) {
+      const sel = document.getElementById(id);
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">' + placeholder + '</option>';
+      files.forEach(f => {
+        const opt = document.createElement('option');
+        opt.value = 'inputs/' + id.replace('project-select','projects').replace('auth-select','auth') + '/' + f;
+        opt.textContent = f;
+        if (opt.value === prev) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+
+    // ── Submit ────────────────────────────────────────────────────────────────
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      const projectFile = form.projectFile.value;
+      if (!projectFile) { alert('Please select a project config file.'); return; }
+
       setRunning(true);
       logEl.textContent = '';
-      logPlaceholder.style.display = 'none';
+      logPH.style.display = 'none';
       logEl.style.display = 'block';
-      reportBtn.style.display = 'none';
+      reportBtn.classList.remove('visible');
       dot.className = 'status-dot running';
 
       const body = {
-        url:      form.url.value,
-        username: form.username.value || undefined,
-        password: form.password.value || undefined,
-        provider: form.provider.value,
-        maxPages: Number(form.maxPages.value),
-        maxDepth: Number(form.maxDepth.value),
+        projectFile,
+        authFile:    form.authFile.value || undefined,
+        provider:    form.provider.value,
+        overwritePom: form.overwritePom.checked,
       };
 
       let res;
@@ -459,27 +566,24 @@ const PAGE_HTML = /* html */`<!doctype html>
         });
       } catch (err) {
         appendLog('[ERROR] Cannot reach server: ' + err.message);
-        setRunning(false);
-        dot.className = 'status-dot error';
-        return;
+        setRunning(false); dot.className = 'status-dot error'; return;
       }
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
         appendLog('[ERROR] ' + err.error);
-        setRunning(false);
-        dot.className = 'status-dot error';
-        return;
+        setRunning(false); dot.className = 'status-dot error'; return;
       }
 
       const { runId } = await res.json();
+      currentRunId = runId;
       connectSSE(runId);
     });
 
+    // ── SSE ───────────────────────────────────────────────────────────────────
     function connectSSE(runId) {
       if (es) es.close();
       es = new EventSource('/stream/' + runId);
-
       es.onmessage = (event) => {
         const line = event.data;
         if (line.startsWith('[DONE]')) {
@@ -488,51 +592,55 @@ const PAGE_HTML = /* html */`<!doctype html>
           dot.className = 'status-dot ' + (code === 0 ? 'done' : 'error');
           if (code === 0) showReport(runId);
           loadReports();
-          es.close();
-          return;
+          es.close(); return;
         }
         appendLog(line);
       };
-
       es.onerror = () => {
         appendLog('[Connection lost]');
-        setRunning(false);
-        dot.className = 'status-dot error';
-        es.close();
+        setRunning(false); dot.className = 'status-dot error'; es.close();
       };
     }
 
+    // ── Stop ─────────────────────────────────────────────────────────────────
+    async function stopRun() {
+      if (!currentRunId) return;
+      await fetch('/stop/' + currentRunId, { method: 'POST' }).catch(() => {});
+      dot.className = 'status-dot stopped';
+      setRunning(false);
+      if (es) { es.close(); es = null; }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
     function appendLog(line) {
       logEl.textContent += line + '\\n';
       logEl.scrollTop = logEl.scrollHeight;
     }
 
     function setRunning(running) {
-      form.querySelectorAll('input, select, button').forEach(el => el.disabled = running);
+      form.querySelectorAll('select, button[type=submit]').forEach(el => el.disabled = running);
       spinner.style.display = running ? 'block' : 'none';
-      btnLabel.textContent = running ? 'Running…' : 'Run Full Workflow';
+      btnLabel.textContent  = running ? 'Running…' : 'Run Workflow';
+      stopBtn.classList.toggle('visible', running);
     }
 
     async function showReport(runId) {
       const reports = await fetch('/reports').then(r => r.json()).catch(() => []);
       const r = reports.find(r => r.runId === runId);
-      if (r) {
-        reportBtn.href = r.url;
-        reportBtn.style.display = 'inline-flex';
-      }
+      if (r) { reportBtn.href = r.url; reportBtn.classList.add('visible'); }
     }
 
     async function loadReports() {
       const reports = await fetch('/reports').then(r => r.json()).catch(() => []);
       const list = document.getElementById('report-list');
       if (!reports.length) {
-        list.innerHTML = '<div style="color:var(--color-text-muted);font-size:.8rem">No reports yet.</div>';
+        list.innerHTML = '<div style="color:var(--color-text-muted);font-size:.8rem;padding:4px 0">No reports yet.</div>';
         return;
       }
       list.innerHTML = reports.slice(0, 8).map(r => \`
         <div class="report-item">
           <span class="report-id">\${r.runId}</span>
-          <a href="\${r.url}" target="_blank">View Report →</a>
+          <a href="\${r.url}" target="_blank">View →</a>
         </div>\`).join('');
     }
   </script>
