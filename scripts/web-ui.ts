@@ -85,6 +85,7 @@ type Provider = typeof PROVIDERS[number];
 async function createProjectFiles(opts: {
   projectName: string; baseUrl: string; loginUrl?: string;
   roleName: string; username?: string; password?: string;
+  usernameLabel?: string; passwordLabel?: string; submitLabel?: string;
   maxPages: number; maxDepth: number;
 }): Promise<{ projectFile: string; authFile?: string }> {
   const slug = safeSlug(opts.projectName);
@@ -96,16 +97,18 @@ async function createProjectFiles(opts: {
       id: slug, loginUrl,
       fields: {
         username: {
-          locator: { kind: "css", css: "input[type='email'],input[name='username'],input[name='email'],input[id*='email'],input[id*='user']" },
+          locator: { kind: "role", role: "textbox", name: opts.usernameLabel || "Email" },
           value: "${SITE_USERNAME}",
         },
         password: {
-          locator: { kind: "css", css: "input[type='password']" },
+          locator: { kind: "role", role: "textbox", name: opts.passwordLabel || "Password" },
           value: "${SITE_PASSWORD}",
         },
         extras: [],
       },
-      submit: { locator: { kind: "css", css: "button[type='submit'],input[type='submit']" } },
+      submit: {
+        locator: { kind: "role", role: "button", name: opts.submitLabel || "Sign in" },
+      },
       postLogin: { waitFor: [] },
       expectsCaptcha: false,
     };
@@ -142,16 +145,19 @@ async function createProjectFiles(opts: {
 const providerEnum = z.enum(PROVIDERS).default("gemini");
 
 const WorkflowSchema = z.object({
-  command: z.literal("workflow"),
-  projectName: z.string().min(1).max(80),
-  baseUrl:     z.string().url(),
-  loginUrl:    z.string().optional(),
-  roleName:    z.string().max(40).default("authenticated"),
-  username:    z.string().max(256).optional(),
-  password:    z.string().max(1024).optional(),
-  provider:    providerEnum,
-  maxPages:    z.number().int().min(1).max(200).default(10),
-  maxDepth:    z.number().int().min(0).max(10).default(3),
+  command:       z.literal("workflow"),
+  projectName:   z.string().min(1).max(80),
+  baseUrl:       z.string().url(),
+  loginUrl:      z.string().optional(),
+  roleName:      z.string().max(40).default("authenticated"),
+  username:      z.string().max(256).optional(),
+  password:      z.string().max(1024).optional(),
+  usernameLabel: z.string().max(80).optional(),
+  passwordLabel: z.string().max(80).optional(),
+  submitLabel:   z.string().max(80).optional(),
+  provider:      providerEnum,
+  maxPages:      z.number().int().min(1).max(200).default(10),
+  maxDepth:      z.number().int().min(0).max(10).default(3),
 });
 
 const QuickSchema = z.object({
@@ -256,10 +262,13 @@ app.post("/run", async (req, res) => {
     let projectFile: string, authFile: string | undefined;
     try {
       ({ projectFile, authFile } = await createProjectFiles({
-        projectName: input.projectName, baseUrl: input.baseUrl,
-        loginUrl: input.loginUrl, roleName: input.roleName,
-        username: input.username, password: input.password,
-        maxPages: input.maxPages, maxDepth: input.maxDepth,
+        projectName:   input.projectName, baseUrl: input.baseUrl,
+        loginUrl:      input.loginUrl,    roleName: input.roleName,
+        username:      input.username,    password: input.password,
+        usernameLabel: input.usernameLabel,
+        passwordLabel: input.passwordLabel,
+        submitLabel:   input.submitLabel,
+        maxPages:      input.maxPages,    maxDepth: input.maxDepth,
       }));
     } catch (err) {
       res.status(500).json({ error: `Config file creation failed: ${(err as Error).message}` });
@@ -575,12 +584,30 @@ const PAGE_HTML = /* html */`<!doctype html>
         </div>
         <div class="field-row">
           <div class="field">
-            <label>Username</label>
+            <label>Username / Email value</label>
             <input name="username" type="text" placeholder="admin@example.com" autocomplete="off"/>
           </div>
           <div class="field">
-            <label>Password</label>
+            <label>Password value</label>
             <input name="password" type="password" placeholder="••••••••" autocomplete="new-password"/>
+          </div>
+        </div>
+        <div id="auth-labels" style="display:none">
+          <div class="field-row">
+            <div class="field">
+              <label>Username field label</label>
+              <input name="usernameLabel" type="text" placeholder="Email"/>
+              <div class="hint">Visible label on the login form (e.g. Email, Username)</div>
+            </div>
+            <div class="field">
+              <label>Password field label</label>
+              <input name="passwordLabel" type="text" placeholder="Password"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>Submit button label</label>
+            <input name="submitLabel" type="text" placeholder="Sign in"/>
+            <div class="hint">Text on the login button (e.g. Sign in, Log in, Login)</div>
           </div>
         </div>
       </div>
@@ -717,6 +744,11 @@ const PAGE_HTML = /* html */`<!doctype html>
   const notice    = document.getElementById('files-notice');
   const filesList = document.getElementById('files-list');
 
+  // Show/hide auth label fields when credentials are entered
+  document.querySelector('input[name="username"]').addEventListener('input', function() {
+    document.getElementById('auth-labels').style.display = this.value.trim() ? 'block' : 'none';
+  });
+
   // Boot
   setCmd('workflow');
   loadReports();
@@ -777,15 +809,18 @@ const PAGE_HTML = /* html */`<!doctype html>
 
     if (cmd === 'workflow') {
       Object.assign(body, {
-        projectName: form.projectName.value.trim(),
-        baseUrl:     form.baseUrl.value.trim(),
-        loginUrl:    form.loginUrl.value.trim() || undefined,
-        roleName:    form.roleName.value.trim() || 'authenticated',
-        username:    form.username.value.trim() || undefined,
-        password:    form.password.value || undefined,
-        provider:    form.provider.value,
-        maxPages:    Number(form.maxPages.value),
-        maxDepth:    Number(form.maxDepth.value),
+        projectName:   form.projectName.value.trim(),
+        baseUrl:       form.baseUrl.value.trim(),
+        loginUrl:      form.loginUrl.value.trim() || undefined,
+        roleName:      form.roleName.value.trim() || 'authenticated',
+        username:      form.username.value.trim() || undefined,
+        password:      form.password.value || undefined,
+        usernameLabel: form.usernameLabel.value.trim() || undefined,
+        passwordLabel: form.passwordLabel.value.trim() || undefined,
+        submitLabel:   form.submitLabel.value.trim() || undefined,
+        provider:      form.provider.value,
+        maxPages:      Number(form.maxPages.value),
+        maxDepth:      Number(form.maxDepth.value),
       });
     } else if (cmd === 'quick') {
       Object.assign(body, {
