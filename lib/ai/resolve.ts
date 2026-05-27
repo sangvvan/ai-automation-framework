@@ -81,13 +81,19 @@ export function makeChainedProvider(opts: ResolveOptions): ChainedProvider {
           return data;
         } catch (err) {
           lastErr = err;
+          const isFallback = attempt < opts.chain.length;
+          // Surface per-provider errors to stderr immediately so the operator
+          // can see why each provider failed (not just the final chain failure).
+          process.stderr.write(
+            `  [provider] ${provider.name} failed (${isFallback ? "trying next" : "no more fallbacks"}): ${(err as Error).message}\n`,
+          );
           await tracer.log({
             at: new Date().toISOString(),
             provider: provider.name,
             role: opts.role,
             requestId,
             durationMs: Date.now() - started,
-            status: attempt < opts.chain.length ? "fallback" : "error",
+            status: isFallback ? "fallback" : "error",
             attempt,
             error: (err as Error).message,
           });

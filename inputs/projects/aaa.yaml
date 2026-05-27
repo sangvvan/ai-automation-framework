@@ -1,0 +1,31 @@
+project: aaa
+baseUrl: http://localhost:3000
+roles:
+  - name: admin
+    authRecipe: inputs/auth/aaa.yaml
+crawl:
+  maxPages: 10
+  maxDepth: 3
+  maxConcurrency: 2
+  perHostQps: 2
+  includeSubdomains: false
+  ignoreRobots: false
+generation:
+  outputDir: tests/generated
+  maxScenariosPerPage: 14
+  fallbackSmoke: true
+run:
+  testLevel: system
+  browsers:
+    - chromium
+  locales: []
+  nonFunctional:
+    a11y: true
+    a11yFailOn: []
+    vitals: true
+    securityHeaders: true
+  junit: true
+  testPlan: true
+  persistDefects: true
+  prComment: false
+  suiteTag: aaa

@@ -94,13 +94,15 @@ export const workflowCommand: CliCommand = {
           storageStatePath = auth.storageStatePath;
           process.stdout.write(`  auth: ${storageStatePath}\n`);
         } catch (err) {
-          process.stderr.write(`  auth failed: ${(err as Error).message}\n`);
+          process.stderr.write(`  auth FAILED for role "${role.name}": ${(err as Error).message}\n`);
+          process.stderr.write(`  recipe: ${role.authRecipe}\n`);
+          process.stderr.write(`  Check: (1) target app is running, (2) SITE_USERNAME/SITE_PASSWORD env vars are set, (3) login form locators match the actual page.\n`);
           return 3;
         }
       } else if (storageStatePath) {
         process.stdout.write(`  auth: using existing ${storageStatePath}\n`);
       } else {
-        process.stdout.write("  auth: anonymous\n");
+        process.stdout.write("  auth: anonymous (no authRecipe configured — set username/password in web UI or add authRecipe to project YAML)\n");
       }
 
       const crawlConfig = CrawlConfig.parse(input.crawl);

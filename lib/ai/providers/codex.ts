@@ -18,7 +18,7 @@ export class CodexProvider implements AiProvider {
       name: "codex",
       baseUrl: opts.baseUrl ?? "https://api.openai.com/v1",
       apiKey,
-      model: opts.model ?? "gpt-4.1-mini",
+      model: opts.model ?? "gpt-4o",
       timeoutMs: opts.timeoutMs ?? 60_000,
       authStyle: apiKey ? "bearer" : "none",
     });

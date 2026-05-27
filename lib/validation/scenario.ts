@@ -105,7 +105,32 @@ export type ScenarioType = z.infer<typeof ScenarioType>;
  * ISTQB-CTFL design technique (REQ-012). Tagged on every scenario so
  * coverage by technique is reportable.
  */
-export const DesignTechnique = z.enum([
+const TECHNIQUE_MAPPING: Record<string, string> = {
+  "equivalence-partitioning": "equivalence-partition",
+  "equivalence partition": "equivalence-partition",
+  "boundary-value-analysis": "boundary-value",
+  "boundary value": "boundary-value",
+  "decision-table-testing": "decision-table",
+  "decision table": "decision-table",
+  "state-transition-testing": "state-transition",
+  "state transition": "state-transition",
+  "use-case-testing": "use-case",
+  "use case": "use-case",
+  "pairwise-testing": "pairwise",
+  "error guessing": "error-guessing",
+  "exploratory-testing": "exploratory-charter",
+  "exploratory": "exploratory-charter",
+};
+
+export const DesignTechnique = z.preprocess((val) => {
+  if (typeof val === "string") {
+    const normalized = val.toLowerCase().trim();
+    if (TECHNIQUE_MAPPING[normalized]) {
+      return TECHNIQUE_MAPPING[normalized];
+    }
+  }
+  return val;
+}, z.enum([
   "equivalence-partition",
   "boundary-value",
   "decision-table",
@@ -114,7 +139,7 @@ export const DesignTechnique = z.enum([
   "pairwise",
   "error-guessing",
   "exploratory-charter",
-]);
+]));
 export type DesignTechnique = z.infer<typeof DesignTechnique>;
 
 export const Priority = z.enum(["P1", "P2", "P3"]);

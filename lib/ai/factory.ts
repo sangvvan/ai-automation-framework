@@ -62,6 +62,23 @@ export function buildProvider(opts: BuildProviderOptions): AiProvider {
           }),
         );
         break;
+      case "lmstudio": {
+        let baseUrl = spec?.baseUrl ?? "http://127.0.0.1:1234/v1";
+        if (!baseUrl.endsWith("/v1") && !baseUrl.endsWith("/v1/")) {
+          baseUrl = baseUrl.replace(/\/+$/, "") + "/v1";
+        }
+        chain.push(
+          new OpenAiCompatibleProvider({
+            name: "lmstudio",
+            baseUrl,
+            apiKey: undefined,
+            model: spec?.model ?? "google/gemma-4-e4b",
+            timeoutMs: spec?.timeoutMs ?? 180000,
+            authStyle: "none",
+          }),
+        );
+        break;
+      }
       case "mock":
         chain.push(new MockProvider());
         break;

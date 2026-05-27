@@ -136,12 +136,13 @@ async function main() {
 
   // ── Step 3: AI Provider ───────────────────────────────────────────────────
   ln(`${C.yellow}${C.bold}  Step 3 / 4  —  AI Provider${C.reset}`);
-  type ProviderKey = "gemini" | "claude" | "codex" | "opencode-ollama" | "mock";
+  type ProviderKey = "gemini" | "claude" | "codex" | "opencode-ollama" | "lmstudio" | "mock";
   const provider = await askMenu<ProviderKey>(rl, "Choose AI provider:", [
     { key: "gemini",           display: "Gemini 2.5 Pro       — Google AI Pro  ⭐ recommended" },
     { key: "claude",           display: "Claude Sonnet 4.6    — Anthropic API" },
     { key: "codex",            display: "GPT-4o               — OpenAI API" },
     { key: "opencode-ollama",  display: "Ollama (qwen2.5:14b) — Local / offline" },
+    { key: "lmstudio",         display: "LM Studio (gemma-4)  — Local / offline" },
     { key: "mock",             display: "Mock                 — No API key needed (dev/test)" },
   ], 0);
   ln();

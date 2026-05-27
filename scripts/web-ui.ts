@@ -77,7 +77,7 @@ function safeSlug(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
 }
 
-const PROVIDERS = ["gemini","claude","codex","opencode-ollama","mock"] as const;
+const PROVIDERS = ["gemini","claude","codex","opencode-ollama","lmstudio","mock"] as const;
 type Provider = typeof PROVIDERS[number];
 
 // ─── Project / auth YAML generators ──────────────────────────────────────────
@@ -87,11 +87,21 @@ async function createProjectFiles(opts: {
   roleName: string; username?: string; password?: string;
   usernameLabel?: string; passwordLabel?: string; submitLabel?: string;
   maxPages: number; maxDepth: number;
-}): Promise<{ projectFile: string; authFile?: string }> {
+}): Promise<{ projectFile: string; authFile?: string; credentialSource?: string }> {
   const slug = safeSlug(opts.projectName);
   let authFile: string | undefined;
 
-  if (opts.username && opts.password) {
+  // Use form values; if blank, fall back to env vars already present in .env
+  // so users don't have to re-enter credentials they've already set up.
+  const effectiveUsername = opts.username || process.env.SITE_USERNAME || "";
+  const effectivePassword = opts.password || process.env.SITE_PASSWORD || "";
+  const credentialSource = opts.username
+    ? "form"
+    : effectiveUsername
+      ? "env (SITE_USERNAME / SITE_PASSWORD)"
+      : undefined;
+
+  if (effectiveUsername && effectivePassword) {
     const loginUrl = opts.loginUrl || opts.baseUrl;
     const recipe = {
       id: slug, loginUrl,
@@ -137,7 +147,7 @@ async function createProjectFiles(opts: {
   const projectFile = path.join("inputs", "projects", `${slug}.yaml`);
   await mkdir(path.join(rootDir, "inputs", "projects"), { recursive: true });
   await writeFile(path.join(rootDir, projectFile), stringifyYaml(yaml), "utf8");
-  return { projectFile, authFile };
+  return { projectFile, authFile, credentialSource };
 }
 
 // ─── Input schemas ────────────────────────────────────────────────────────────
@@ -259,9 +269,9 @@ app.post("/run", async (req, res) => {
 
   // ── Build argv per command ────────────────────────────────────────────────
   if (input.command === "workflow") {
-    let projectFile: string, authFile: string | undefined;
+    let projectFile: string, authFile: string | undefined, credentialSource: string | undefined;
     try {
-      ({ projectFile, authFile } = await createProjectFiles({
+      ({ projectFile, authFile, credentialSource } = await createProjectFiles({
         projectName:   input.projectName, baseUrl: input.baseUrl,
         loginUrl:      input.loginUrl,    roleName: input.roleName,
         username:      input.username,    password: input.password,
@@ -276,9 +286,11 @@ app.post("/run", async (req, res) => {
     }
     argv = ["vite-node", script, "workflow", "--input", path.resolve(rootDir, projectFile), "--skip-preflight"];
     env.AI_TEST_DEFAULT_PROVIDER = input.provider;
-    if (input.username) env.SITE_USERNAME = input.username;
-    if (input.password) env.SITE_PASSWORD = input.password;
-    initNote = JSON.stringify({ projectFile, authFile });
+    // Always propagate credentials to child env so ${SITE_USERNAME}/${SITE_PASSWORD}
+    // in the auth recipe are resolved — use form values first, then fall back to .env values.
+    env.SITE_USERNAME = input.username || process.env.SITE_USERNAME || "";
+    env.SITE_PASSWORD = input.password || process.env.SITE_PASSWORD || "";
+    initNote = JSON.stringify({ projectFile, authFile, credentialSource });
 
   } else if (input.command === "quick") {
     argv = ["vite-node", script, "quick", "--url", input.url, "--skip-preflight"];
@@ -333,6 +345,23 @@ app.get("/stream/:runId", (req, res) => {
   if (run.status !== "running") { sseWrite(res, `[DONE] exitCode=${run.exitCode ?? -1}`); res.end(); return; }
   run.subscribers.add(res);
   req.on("close", () => run.subscribers.delete(res));
+});
+
+// ── GET /ping?url=<url> — reachability check used by the UI pre-flight banner ─
+app.get("/ping", async (req, res) => {
+  const target = String(req.query.url ?? "");
+  if (!target.startsWith("http")) { res.json({ ok: false, reason: "invalid url" }); return; }
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const r = await fetch(target, { method: "HEAD", signal: ctrl.signal }).catch(() =>
+      fetch(target, { method: "GET", signal: ctrl.signal }),
+    );
+    clearTimeout(timer);
+    res.json({ ok: r.ok || r.status < 500, status: r.status });
+  } catch (err) {
+    res.json({ ok: false, reason: (err as Error).message });
+  }
 });
 
 // ── GET /reports ──────────────────────────────────────────────────────────────
@@ -465,6 +494,16 @@ const PAGE_HTML = /* html */`<!doctype html>
       font-size:.77rem;color:var(--color-muted);display:none}
     .files-notice code{font-family:monospace;color:var(--color-info-text)}
 
+    /* Target app reachability banner */
+    .reach-banner{margin-bottom:14px;padding:8px 11px;border-radius:7px;
+      font-size:.77rem;display:none;align-items:center;gap:8px}
+    .reach-banner.ok{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3);
+      color:#059669}
+    .reach-banner.fail{background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);
+      color:var(--color-ko)}
+    .reach-banner.checking{background:var(--color-sk-bg);border:1px solid var(--border);
+      color:var(--color-muted)}
+
     /* Right panel */
     .log-panel .panel-title{display:flex;justify-content:space-between;align-items:center}
     .dot{width:9px;height:9px;border-radius:50%;background:var(--border);transition:background .3s}
@@ -560,18 +599,11 @@ const PAGE_HTML = /* html */`<!doctype html>
         </div>
         <div class="field">
           <label>Base URL *</label>
-          <input name="baseUrl" type="url" placeholder="https://myapp.com"/>
+          <input name="baseUrl" type="url" placeholder="https://myapp.com" id="baseUrl-input" oninput="scheduleReachCheck(this.value)"/>
+          <div class="reach-banner" id="reach-banner"></div>
         </div>
-        <div class="field-row">
-          <div class="field">
-            <label>Max Pages</label>
-            <input name="maxPages" type="number" value="10" min="1" max="200"/>
-          </div>
-          <div class="field">
-            <label>Max Depth</label>
-            <input name="maxDepth" type="number" value="3" min="0" max="10"/>
-          </div>
-        </div>
+        <input name="maxPages" type="hidden" value="10"/>
+        <input name="maxDepth" type="hidden" value="3"/>
 
         <div class="sec">Authentication <span style="font-weight:400;text-transform:none;font-size:.8rem">(optional)</span></div>
         <div class="field">
@@ -592,24 +624,9 @@ const PAGE_HTML = /* html */`<!doctype html>
             <input name="password" type="password" placeholder="••••••••" autocomplete="new-password"/>
           </div>
         </div>
-        <div id="auth-labels" style="display:none">
-          <div class="field-row">
-            <div class="field">
-              <label>Username field label</label>
-              <input name="usernameLabel" type="text" placeholder="Email"/>
-              <div class="hint">Visible label on the login form (e.g. Email, Username)</div>
-            </div>
-            <div class="field">
-              <label>Password field label</label>
-              <input name="passwordLabel" type="text" placeholder="Password"/>
-            </div>
-          </div>
-          <div class="field">
-            <label>Submit button label</label>
-            <input name="submitLabel" type="text" placeholder="Sign in"/>
-            <div class="hint">Text on the login button (e.g. Sign in, Log in, Login)</div>
-          </div>
-        </div>
+        <input name="usernameLabel" type="hidden" value=""/>
+        <input name="passwordLabel" type="hidden" value=""/>
+        <input name="submitLabel" type="hidden" value=""/>
       </div>
 
       <!-- ═══ QUICK ══════════════════════════════════════════════════════════ -->
@@ -676,6 +693,7 @@ const PAGE_HTML = /* html */`<!doctype html>
             <option value="claude">Claude Sonnet 4.6 — Anthropic</option>
             <option value="codex">GPT-4o — OpenAI</option>
             <option value="opencode-ollama">Ollama (qwen2.5:14b) — Local</option>
+            <option value="lmstudio">LM Studio (gemma-4) — Local</option>
             <option value="mock">Mock — No API key (dev/test)</option>
           </select>
         </div>
@@ -744,10 +762,34 @@ const PAGE_HTML = /* html */`<!doctype html>
   const notice    = document.getElementById('files-notice');
   const filesList = document.getElementById('files-list');
 
-  // Show/hide auth label fields when credentials are entered
-  document.querySelector('input[name="username"]').addEventListener('input', function() {
-    document.getElementById('auth-labels').style.display = this.value.trim() ? 'block' : 'none';
-  });
+
+  // ── Target app reachability check ────────────────────────────────────────────
+  let _reachTimer = null;
+  function scheduleReachCheck(url) {
+    clearTimeout(_reachTimer);
+    const banner = document.getElementById('reach-banner');
+    if (!url || !url.startsWith('http')) { banner.style.display='none'; return; }
+    banner.className = 'reach-banner checking';
+    banner.style.display = 'flex';
+    banner.textContent = 'Checking if target app is reachable…';
+    _reachTimer = setTimeout(() => checkReach(url), 700);
+  }
+  async function checkReach(url) {
+    const banner = document.getElementById('reach-banner');
+    try {
+      const r = await fetch('/ping?url=' + encodeURIComponent(url));
+      const d = await r.json();
+      if (d.ok) {
+        banner.className = 'reach-banner ok';
+        banner.textContent = '✓ Target app is reachable — ready to run workflow';
+      } else {
+        banner.className = 'reach-banner fail';
+        banner.innerHTML = '⚠ Target app not reachable (' + (d.reason || 'HTTP ' + d.status) + '). ' +
+          'Start the app first (e.g. <code>docker compose up</code> or <code>npm run fixture:serve</code>) ' +
+          'before running the workflow — auth will fail otherwise.';
+      }
+    } catch { banner.style.display = 'none'; }
+  }
 
   // Boot
   setCmd('workflow');
@@ -864,8 +906,13 @@ const PAGE_HTML = /* html */`<!doctype html>
     if (data.initNote) {
       try {
         const f = JSON.parse(data.initNote);
-        filesList.innerHTML = [f.projectFile, f.authFile].filter(Boolean)
+        let html = [f.projectFile, f.authFile].filter(Boolean)
           .map(p => '<code>' + p + '</code>').join(' &nbsp;·&nbsp; ');
+        if (f.authFile && f.credentialSource)
+          html += ' &nbsp;<span style="color:var(--color-ok)">✓ credentials from ' + f.credentialSource + '</span>';
+        if (!f.authFile)
+          html += ' &nbsp;<span style="color:var(--color-warn)">⚠ no auth — add SITE_USERNAME/SITE_PASSWORD to .env or fill in the credentials fields</span>';
+        filesList.innerHTML = html;
         notice.style.display = 'block';
       } catch {}
     }

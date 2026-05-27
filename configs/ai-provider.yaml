@@ -17,6 +17,19 @@ providers:
     model: qwen2.5:14b
     timeoutMs: 180000             # local models can be slow on first token
 
+  lmstudio:
+    enabled: true
+    baseUrl: http://127.0.0.1:1234
+    # LM Studio optimizations for MacBook Pro M5 Pro 24GB RAM:
+    #   1. Model: google/gemma-4-e4b (currently loaded & active on your Mac)
+    #   2. Context Length: Set Context window to 8192 (8k) in LM Studio.
+    #      (Large enough for PageAnalysis, small enough to keep KV Cache RAM footprint low)
+    #   3. GPU Settings: Fully enable Apple Silicon GPU acceleration (Metal/MLX).
+    #   4. Workers/Concurrency: Single thread execution (maxConcurrency: 1 in project yaml)
+    #      preserves unified RAM for high speed inference.
+    model: google/gemma-4-e4b
+    timeoutMs: 300000             # increase timeout to 5m to prevent transient cold-starts or slow local generations
+
   opencode:
     enabled: false                # LM Studio fallback (enable if preferred)
     baseUrl: http://localhost:1234/v1
@@ -37,23 +50,22 @@ providers:
 
   codex:
     enabled: true
-    model: gpt-4o
+    model: gpt-5.4-mini
     baseUrl: https://api.openai.com/v1
     timeoutMs: 120000
 
   mock:
-    enabled: true                 # always available; used in unit tests
+    enabled: false                 # always available; used in unit tests
 
 # ── Fallback chains ───────────────────────────────────────────────────────────
 # Local Ollama first → cloud providers → mock (offline last resort)
 fallbackChain:
   design:
+    - lmstudio
     - gemini
     - claude
     - codex
-    - mock
   validate:
-    - gemini
+    - lmstudio
     - claude
     - codex
-    - mock

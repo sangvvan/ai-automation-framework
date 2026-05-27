@@ -88,6 +88,7 @@ export const ProviderName = z.enum([
   "gemini",
   "opencode",
   "opencode-ollama",
+  "lmstudio",
   "mock",
 ]);
 export type ProviderName = z.infer<typeof ProviderName>;
@@ -210,10 +211,25 @@ export function loadConfig(opts: LoadConfigOptions = {}): FrameworkConfig {
       );
     }
     if (env.AI_TEST_DEFAULT_PROVIDER) {
-      merged.ai = deepMerge(
-        (merged.ai as Record<string, unknown>) ?? {},
-        { defaultProvider: env.AI_TEST_DEFAULT_PROVIDER },
-      );
+      const overrideProvider = env.AI_TEST_DEFAULT_PROVIDER;
+      const existingAi = (merged.ai as Record<string, unknown>) ?? {};
+      const existingChains =
+        (existingAi.fallbackChain as Record<string, string[]>) ?? {};
+
+      // Promote the selected provider to the FRONT of every fallback chain so
+      // it is actually used when a chain exists for a role (e.g. "design").
+      // Without this, cfg.ai.defaultProvider is ignored whenever a named chain
+      // is present, meaning UI/CLI provider selection had no effect on generation.
+      const updatedChains: Record<string, string[]> = {};
+      for (const [chainRole, chain] of Object.entries(existingChains)) {
+        const rest = (chain as string[]).filter((p) => p !== overrideProvider);
+        updatedChains[chainRole] = [overrideProvider, ...rest];
+      }
+
+      merged.ai = deepMerge(existingAi, {
+        defaultProvider: overrideProvider,
+        fallbackChain: updatedChains,
+      });
     }
     if (env.AI_TEST_MAX_SCENARIOS) {
       merged.generation = deepMerge(
