@@ -62,10 +62,18 @@ export async function runScenarios(
 ): Promise<{ results: ScenarioResult[]; touched: Locator[][] }> {
   const results: ScenarioResult[] = [];
   const touched: Locator[][] = [];
+  let count = 0;
   for (const scenario of scenarios) {
+    count++;
     const r = await runOne(scenario, opts);
     results.push(r.result);
     touched.push(r.touched);
+
+    // Live progress log for the CLI & Web UI live output
+    const statusSymbol = r.result.status === "passed" ? "✓" : "✗";
+    process.stdout.write(
+      `    ${statusSymbol} [${count}/${scenarios.length}] Scenario: "${scenario.title}" [${scenario.id}] — ${r.result.status.toUpperCase()}\n`
+    );
   }
   return { results, touched };
 }

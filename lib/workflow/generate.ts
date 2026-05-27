@@ -88,6 +88,8 @@ export async function generateTestCasesFromSiteMap(
     await mkdir(evidenceDir, { recursive: true });
 
     try {
+      process.stdout.write(`  [AI Design] Designing test scenarios for page: ${page.normalizedUrl}...\n`);
+
       const analysis = await analyzePage({
         url: page.normalizedUrl,
         viewport: opts.cfg.runner.viewport,

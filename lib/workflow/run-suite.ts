@@ -120,6 +120,8 @@ export async function runTestCaseSuite(
       continue;
     }
 
+    process.stdout.write(`  [Playwright] Launching browser and running test cases for: ${pageUrl}...\n`);
+
     const pageDir = path.join(evidenceDir, pageHash(pageUrl));
     await mkdir(pageDir, { recursive: true });
     const analysis = await analyzePage({
