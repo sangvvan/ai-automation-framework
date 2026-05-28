@@ -77,7 +77,7 @@ function safeSlug(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
 }
 
-const PROVIDERS = ["gemini","claude","codex","opencode-ollama","lmstudio","mock"] as const;
+const PROVIDERS = ["gemini","claude","codex","ollama","lmstudio","mock"] as const;
 type Provider = typeof PROVIDERS[number];
 
 // ─── Project / auth YAML generators ──────────────────────────────────────────
@@ -692,7 +692,7 @@ const PAGE_HTML = /* html */`<!doctype html>
             <option value="gemini">⭐ Gemini 2.5 Pro — Google AI Pro</option>
             <option value="claude">Claude Sonnet 4.6 — Anthropic</option>
             <option value="codex">GPT-4o — OpenAI</option>
-            <option value="opencode-ollama">Ollama (qwen2.5:14b) — Local</option>
+            <option value="ollama">Ollama (gemma-4-31B-it-FP8) — Local</option>
             <option value="lmstudio">LM Studio (gemma-4) — Local</option>
             <option value="mock">Mock — No API key (dev/test)</option>
           </select>

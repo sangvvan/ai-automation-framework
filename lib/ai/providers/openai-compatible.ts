@@ -24,6 +24,12 @@ export interface OpenAiCompatibleOptions {
   timeoutMs?: number;
   /** Some local servers (LM Studio) need the auth header skipped. */
   authStyle?: "bearer" | "none";
+  /**
+   * Force Ollama/local-style behaviour regardless of the URL:
+   * skip response_format, use streaming to avoid server-side timeouts,
+   * and use 8192 max_tokens for thinking models (e.g. remote vLLM/Gemma 4).
+   */
+  localStyle?: boolean;
 }
 
 export class OpenAiCompatibleProvider implements AiProvider {
@@ -62,18 +68,22 @@ export class OpenAiCompatibleProvider implements AiProvider {
       this.opts.model.startsWith("gpt-5") ||
       this.opts.model.startsWith("gpt-6");
 
-    // Local models (Ollama/LM Studio) cap at 2048 to avoid OOM;
-    // cloud models use 4096. Callers may override via input.maxTokens.
-    const isLocalModel =
+    const isLocalUrl =
       this.opts.baseUrl.includes("localhost") ||
       this.opts.baseUrl.includes("127.0.0.1");
-    const defaultMaxTokens = isLocalModel ? 2048 : 4096;
+    // Skip response_format for Ollama-compatible servers (local or remote vLLM).
+    const skipResponseFormat = this.opts.localStyle === true || isLocalUrl;
+    // Token cap: 2048 only for truly local URLs (OOM risk); remote servers get 8192.
+    // Thinking models (e.g. Gemma 4) need the larger budget to complete CoT + response.
+    const defaultMaxTokens = isLocalUrl ? 2048 : 8192;
 
-    const body: Record<string, any> = {
+    const baseUrl = this.opts.baseUrl.replace(/\/+$/, "");
+
+    const body: Record<string, unknown> = {
       model: this.opts.model,
-      // response_format json_object is not supported by all local models;
+      // response_format json_object is not supported by Ollama/vLLM servers;
       // we rely on the system prompt + extractJson() instead.
-      ...(isLocalModel ? {} : { response_format: { type: "json_object" } }),
+      ...(skipResponseFormat ? {} : { response_format: { type: "json_object" } }),
       messages: [
         {
           role: "system" as const,
@@ -90,58 +100,151 @@ export class OpenAiCompatibleProvider implements AiProvider {
       body.max_completion_tokens = input.maxTokens ?? defaultMaxTokens;
     } else {
       body.max_tokens = input.maxTokens ?? defaultMaxTokens;
-      body.temperature = isLocalModel ? 0.1 : 0.2; // lower temp = more deterministic JSON
+      body.temperature = skipResponseFormat ? 0.1 : 0.2;
     }
 
     try {
-      const res = await fetch(`${this.opts.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-        method: "POST",
-        signal,
-        headers,
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new ProviderError(
-          `${this.name} HTTP ${res.status}: ${txt.slice(0, 200)}`,
-          this.name,
-        );
+      // Use SSE streaming for Ollama/vLLM to avoid server-side hard timeouts.
+      // The server closes idle connections at ~300s, but streaming keeps the
+      // connection alive as tokens flow in.
+      if (this.opts.localStyle) {
+        return await this._fetchStreaming<T>(baseUrl, headers, body, signal, input);
       }
-      const payload = (await res.json()) as {
-        choices: Array<{ message?: { content?: string } }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
-      };
-      const text = payload.choices?.[0]?.message?.content ?? "";
-      if (!text) {
-        throw new ProviderError(`${this.name}: empty response`, this.name);
-      }
-      const jsonText = extractJson(text);
-      let data: unknown;
-      try {
-        data = JSON.parse(jsonText);
-      } catch (err) {
-        throw new ProviderError(
-          `${this.name}: response was not JSON: ${(err as Error).message}`,
-          this.name,
-        );
-      }
-      const parsed = input.schema.safeParse(data);
-      if (!parsed.success) {
-        throw new ProviderError(
-          `${this.name}: response failed schema: ${parsed.error.message}`,
-          this.name,
-        );
-      }
-      const usage: TokenUsage | undefined = payload.usage
-        ? {
-            input: payload.usage.prompt_tokens ?? 0,
-            output: payload.usage.completion_tokens ?? 0,
-          }
-        : undefined;
-      return { data: parsed.data as T, usage };
+      return await this._fetchJson<T>(baseUrl, headers, body, signal, input);
     } finally {
       clearTimeout(t);
     }
+  }
+
+  private async _fetchJson<T>(
+    baseUrl: string,
+    headers: Record<string, string>,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+    input: GenerateInput<T>,
+  ): Promise<GenerateResult<T>> {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      signal,
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new ProviderError(
+        `${this.name} HTTP ${res.status}: ${txt.slice(0, 200)}`,
+        this.name,
+      );
+    }
+    const payload = (await res.json()) as {
+      choices: Array<{ message?: { content?: string | null } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
+    const text = payload.choices?.[0]?.message?.content ?? "";
+    if (!text) {
+      throw new ProviderError(`${this.name}: empty response`, this.name);
+    }
+    return this._parseAndValidate(text, payload.usage, input);
+  }
+
+  private async _fetchStreaming<T>(
+    baseUrl: string,
+    headers: Record<string, string>,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+    input: GenerateInput<T>,
+  ): Promise<GenerateResult<T>> {
+    const streamBody = {
+      ...body,
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      signal,
+      headers,
+      body: JSON.stringify(streamBody),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new ProviderError(
+        `${this.name} HTTP ${res.status}: ${txt.slice(0, 200)}`,
+        this.name,
+      );
+    }
+    if (!res.body) {
+      throw new ProviderError(`${this.name}: no response body`, this.name);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let content = "";
+    let rawUsage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") continue;
+          try {
+            const chunk = JSON.parse(data) as {
+              choices?: Array<{ delta?: { content?: string | null } }>;
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
+            };
+            const delta = chunk.choices?.[0]?.delta?.content;
+            if (delta) content += delta;
+            if (chunk.usage) rawUsage = chunk.usage;
+          } catch {
+            // malformed SSE chunk — skip
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!content) {
+      throw new ProviderError(`${this.name}: empty response`, this.name);
+    }
+    return this._parseAndValidate(content, rawUsage, input);
+  }
+
+  private _parseAndValidate<T>(
+    text: string,
+    rawUsage: { prompt_tokens?: number; completion_tokens?: number } | undefined,
+    input: GenerateInput<T>,
+  ): GenerateResult<T> {
+    const jsonText = extractJson(text);
+    let data: unknown;
+    try {
+      data = JSON.parse(jsonText);
+    } catch (err) {
+      throw new ProviderError(
+        `${this.name}: response was not JSON: ${(err as Error).message}`,
+        this.name,
+      );
+    }
+    const parsed = input.schema.safeParse(data);
+    if (!parsed.success) {
+      throw new ProviderError(
+        `${this.name}: response failed schema: ${parsed.error.message}`,
+        this.name,
+      );
+    }
+    const usage: TokenUsage | undefined = rawUsage
+      ? {
+          input: rawUsage.prompt_tokens ?? 0,
+          output: rawUsage.completion_tokens ?? 0,
+        }
+      : undefined;
+    return { data: parsed.data as T, usage };
   }
 }
 

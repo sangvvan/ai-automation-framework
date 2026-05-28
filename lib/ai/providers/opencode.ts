@@ -23,6 +23,7 @@ export class OpencodeProvider implements AiProvider {
       model: opts.model ?? "google/gemma-4-26b-a4b",
       timeoutMs: opts.timeoutMs ?? 120_000,
       authStyle: opts.apiKey ? "bearer" : "none",
+      localStyle: true, // Ollama-compatible servers don't support response_format
     });
   }
 

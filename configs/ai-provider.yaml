@@ -2,20 +2,16 @@
 # ── Active default ────────────────────────────────────────────────────────────
 # Local Ollama. Requires: ollama pull qwen2.5:14b
 # Switch to "claude" and add CLAUDE_API_KEY for cloud fallback.
-defaultProvider: gemini
+defaultProvider: ollama
+
 
 providers:
   # ── Local (Ollama) ──────────────────────────────────────────────────────────
-  opencode-ollama:
+  ollama:
     enabled: true
-    baseUrl: http://localhost:11434/v1
-    # Models that fit 24 GB RAM (pick one, pull with: ollama pull <model>):
-    #   qwen2.5:14b      8.7 GB  ← recommended: best JSON + instruction following
-    #   mistral-nemo     7.1 GB  ← fast, good quality
-    #   phi4:14b         8.4 GB  ← strong reasoning
-    #   llama3.1:8b      4.7 GB  ← lightest option
-    model: qwen2.5:14b
-    timeoutMs: 180000             # local models can be slow on first token
+    baseUrl: http://hc1-c-0003u.hc.apac.bosch.com:30000/v1
+    model: /models/gemma-4-31B-it-FP8
+    timeoutMs: 600000             # Gemma 4 thinking model: 8192 tokens + reasoning chain can take 5-8 min
 
   lmstudio:
     enabled: true
@@ -30,11 +26,11 @@ providers:
     model: google/gemma-4-e4b
     timeoutMs: 300000             # increase timeout to 5m to prevent transient cold-starts or slow local generations
 
-  opencode:
-    enabled: false                # LM Studio fallback (enable if preferred)
-    baseUrl: http://localhost:1234/v1
-    model: qwen2.5:14b
-    timeoutMs: 180000
+  # opencode:
+  #   enabled: false                # LM Studio fallback (enable if preferred)
+  #   baseUrl: http://localhost:1234/v1
+  #   model: qwen2.5:14b
+  #   timeoutMs: 180000
 
   # ── Cloud (optional, for higher quality or when Ollama not running) ─────────
   claude:
@@ -58,14 +54,10 @@ providers:
     enabled: false                 # always available; used in unit tests
 
 # ── Fallback chains ───────────────────────────────────────────────────────────
-# Local Ollama first → cloud providers → mock (offline last resort)
+# Bosch Ollama server only (no cloud fallback).
+# Add lmstudio back here if running LM Studio locally.
 fallbackChain:
   design:
-    - lmstudio
-    - gemini
-    - claude
-    - codex
+    - ollama
   validate:
-    - lmstudio
-    - claude
-    - codex
+    - ollama

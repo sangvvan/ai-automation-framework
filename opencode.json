@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "opencode": {
+      "baseUrl": "http://hc1-c-0003u.hc.apac.bosch.com:30000/v1",
+      "model": "/models/gemma-4-31B-it-FP8",
+      "timeout": 120000
+    }
+  },
+  "model": "/models/gemma-4-31B-it-FP8",
+  "defaultProvider": "opencode"
+}

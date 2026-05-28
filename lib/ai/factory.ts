@@ -53,7 +53,6 @@ export function buildProvider(opts: BuildProviderOptions): AiProvider {
         );
         break;
       case "opencode":
-      case "opencode-ollama":
         chain.push(
           new OpencodeProvider({
             baseUrl: spec?.baseUrl,
@@ -62,6 +61,20 @@ export function buildProvider(opts: BuildProviderOptions): AiProvider {
           }),
         );
         break;
+      case "ollama": {
+        const ollamaUrl = spec?.baseUrl ?? "http://localhost:11434/v1";
+        chain.push(
+          new OpenAiCompatibleProvider({
+            name: "ollama",
+            baseUrl: ollamaUrl,
+            model: spec?.model ?? "qwen2.5:14b",
+            timeoutMs: spec?.timeoutMs ?? 180_000,
+            authStyle: "none",
+            localStyle: true,
+          }),
+        );
+        break;
+      }
       case "lmstudio": {
         let baseUrl = spec?.baseUrl ?? "http://127.0.0.1:1234/v1";
         if (!baseUrl.endsWith("/v1") && !baseUrl.endsWith("/v1/")) {

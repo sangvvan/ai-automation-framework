@@ -87,7 +87,7 @@ export const ProviderName = z.enum([
   "codex",
   "gemini",
   "opencode",
-  "opencode-ollama",
+  "ollama",
   "lmstudio",
   "mock",
 ]);

@@ -10,7 +10,7 @@ deciders: planning agent
 
 ## Context
 PS §17.5 + CLAUDE.md require pluggable AI providers and a fallback chain
-(`claude → codex`, `codex → opencode → opencode-ollama`). The framework
+(`claude → codex`, `codex → opencode → ollama`). The framework
 must work offline (LM Studio) and online (Claude), and route by phase.
 
 ## Decision
