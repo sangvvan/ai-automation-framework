@@ -2,37 +2,51 @@
  * CLI command: generate-scripts
  *
  * Converts a test-case manifest (produced by `ai-test generate`) into
- * Playwright TypeScript .spec.ts + POM .page.ts files.
+ * executable automation scripts.
  *
- * Output layout (always POM-based):
+ * Python output (default):
  *   <output-dir>/
- *     playwright.config.ts      ← ready to run with `npx playwright test`
- *     <page>.spec.ts            ← thin spec, imports POM class only
- *     pom/
- *       <page>.page.ts          ← POM class: locators + goto()
+ *     conftest.py / pytest.ini / requirements.txt
+ *     pages/base_page.py
+ *     pages/<slug>_page.py    ← Page Object class
+ *     tests/test_<slug>.py    ← pytest test class (AUTO + CUSTOM zones)
+ *
+ * TypeScript output (--language=typescript):
+ *   <output-dir>/
+ *     playwright.config.ts
+ *     <page>.spec.ts          ← spec, imports POM class only
+ *     pom/<page>.page.ts      ← POM class: locators + goto()
  *
  * Usage:
  *   ai-test generate-scripts --manifest tests/generated/my-app/admin/manifest.json
+ *   ai-test generate-scripts --manifest ... --language=typescript
  *   ai-test generate-scripts --manifest ... --output-dir tests/e2e
- *   ai-test generate-scripts --manifest ... --overwrite-pom   # re-generate POM files
+ *   ai-test generate-scripts --manifest ... --overwrite-pom
  */
 
 import { flagBool, flagString } from "../args";
 import type { CliCommand } from "../commands";
 import { generateAutomationScripts } from "../../codegen/script-writer";
+import { generatePythonAutomationScripts } from "../../codegen/python-script-writer";
 
 export const generateScriptsCommand: CliCommand = {
   help: {
     name: "generate-scripts",
     summary:
-      "Convert YAML test-case files into Playwright .spec.ts + POM .page.ts automation scripts.",
+      "Convert YAML test-case files into Python pytest + POM or TypeScript Playwright automation scripts.",
     example:
-      "ai-test generate-scripts --manifest tests/generated/my-app/admin/manifest.json",
+      "ai-test generate-scripts --manifest tests/generated/my-app/admin/manifest.json\n" +
+      "  ai-test generate-scripts --manifest ... --language=typescript",
     options: [
       {
         flag: "--manifest",
         description:
           "Path to the manifest.json produced by `ai-test generate` (required)",
+      },
+      {
+        flag: "--language",
+        description:
+          "Output language: python (default) | typescript",
       },
       {
         flag: "--output-dir",
@@ -42,15 +56,15 @@ export const generateScriptsCommand: CliCommand = {
       {
         flag: "--overwrite-pom",
         description:
-          "Re-generate POM .page.ts files even if they already exist (overwrites hand-edits)",
+          "Re-generate page-object files even if they already exist (overwrites hand-edits)",
       },
       {
         flag: "--no-istqb",
-        description: "Omit ISTQB TC-ID/technique annotation comments from test blocks",
+        description: "Omit ISTQB TC-ID/technique annotations from test blocks/docstrings",
       },
       {
         flag: "--timeout",
-        description: "Per-scenario Playwright timeout in ms (default: 30000)",
+        description: "Per-scenario Playwright timeout in ms, TypeScript only (default: 30000)",
       },
     ],
   },
@@ -62,6 +76,66 @@ export const generateScriptsCommand: CliCommand = {
       return 1;
     }
 
+    const language = (flagString(args, "language") ?? "python") as "python" | "typescript";
+    const outputDir = flagString(args, "output-dir");
+    const overwritePom = flagBool(args, "overwrite-pom");
+    const istqbAnnotations = !flagBool(args, "no-istqb");
+
+    if (language === "python") {
+      let result;
+      try {
+        result = await generatePythonAutomationScripts({
+          manifestPath,
+          outputDir,
+          overwritePom,
+          istqbAnnotations,
+        });
+      } catch (err) {
+        process.stderr.write(`generate-scripts (python) failed: ${(err as Error).message}\n`);
+        return 2;
+      }
+
+      const { totals, scriptsDir, files, errors } = result;
+
+      process.stdout.write(
+        `\n✓ Generated ${totals.filesWritten} Python test file(s) in ${scriptsDir}\n`,
+      );
+      process.stdout.write(
+        `  Page objects written:  ${totals.pageFilesWritten}\n`,
+      );
+      if (totals.pageFilesPreserved > 0) {
+        process.stdout.write(
+          `  Page objects preserved: ${totals.pageFilesPreserved} (use --overwrite-pom to regenerate)\n`,
+        );
+      }
+      process.stdout.write(
+        `  Scenarios:             ${totals.scenariosTotal - totals.scenariosSkipped} scripted` +
+        (totals.scenariosSkipped > 0 ? `, ${totals.scenariosSkipped} skipped` : "") +
+        "\n",
+      );
+
+      process.stdout.write("\n  Files:\n");
+      for (const f of files) {
+        process.stdout.write(`    test → ${f.testPath}  (${f.scenarioCount} test method(s))\n`);
+        process.stdout.write(`    page → ${f.pagePath}${f.pageOverwritten ? " (overwritten)" : " (new)"}\n`);
+      }
+
+      if (errors.length > 0) {
+        process.stderr.write(`\n  Errors (${errors.length} page(s) skipped):\n`);
+        for (const e of errors) {
+          process.stderr.write(`  ✗ ${e.pageUrl}: ${e.reason}\n`);
+        }
+        return totals.filesWritten ? 0 : 2;
+      }
+
+      process.stdout.write(`\nRun generated tests:\n`);
+      process.stdout.write(`  cd ${scriptsDir} && pytest\n`);
+      process.stdout.write(`  # or\n`);
+      process.stdout.write(`  pytest --headed  # show browser\n\n`);
+      return 0;
+    }
+
+    // TypeScript
     const timeoutStr = flagString(args, "timeout");
     const scenarioTimeoutMs = timeoutStr ? parseInt(timeoutStr, 10) : undefined;
 
@@ -69,13 +143,13 @@ export const generateScriptsCommand: CliCommand = {
     try {
       result = await generateAutomationScripts({
         manifestPath,
-        outputDir: flagString(args, "output-dir"),
-        overwritePom: flagBool(args, "overwrite-pom"),
-        istqbAnnotations: !flagBool(args, "no-istqb"),
+        outputDir,
+        overwritePom,
+        istqbAnnotations,
         scenarioTimeoutMs,
       });
     } catch (err) {
-      process.stderr.write(`generate-scripts failed: ${(err as Error).message}\n`);
+      process.stderr.write(`generate-scripts (typescript) failed: ${(err as Error).message}\n`);
       return 2;
     }
 

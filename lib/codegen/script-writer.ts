@@ -119,6 +119,7 @@ export async function generateAutomationScripts(
   const codegenOpts: PlaywrightCodegenOptions = {
     istqbAnnotations: opts.istqbAnnotations ?? true,
     scenarioTimeoutMs: opts.scenarioTimeoutMs ?? 30_000,
+    // pomSlugName injected per file below so import path matches the actual .page.ts filename
   };
 
   for (const caseFile of casesManifest.files) {
@@ -149,15 +150,15 @@ export async function generateAutomationScripts(
       continue;
     }
 
+    const baseName = path.basename(caseFilePath, path.extname(caseFilePath));
+
     let generated;
     try {
-      generated = generatePlaywrightScript(scenarios, codegenOpts);
+      generated = generatePlaywrightScript(scenarios, { ...codegenOpts, pomSlugName: baseName });
     } catch (err) {
       errors.push({ pageUrl: caseFile.pageUrl, reason: `codegen: ${(err as Error).message.slice(0, 200)}` });
       continue;
     }
-
-    const baseName = path.basename(caseFilePath, path.extname(caseFilePath));
 
     // ── Spec file — smart merge (AUTO zone updated, CUSTOM zone preserved) ──
     const specPath = path.join(scriptsDir, `${baseName}.spec.ts`);

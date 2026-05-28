@@ -37,6 +37,12 @@ import { scenarioHash, type SpecParts } from "./spec-merger";
 export interface PlaywrightCodegenOptions {
   /** Human-readable page title used in describe() + POM class name */
   pageTitle?: string;
+  /**
+   * Slug name for the POM file (e.g. "auth-login-edbfc1dd").
+   * When set, the spec imports from ./pom/<pomSlugName>.page instead of
+   * deriving the name from the page URL. Must match the actual .page.ts filename.
+   */
+  pomSlugName?: string;
   /** ISTQB technique comments above each test (default true) */
   istqbAnnotations?: boolean;
   /** Per-scenario Playwright timeout in ms (default 30000) */
@@ -85,6 +91,7 @@ export function generatePlaywrightScript(
 
   const {
     pageTitle,
+    pomSlugName,
     istqbAnnotations = true,
     scenarioTimeoutMs = 30_000,
   } = opts;
@@ -92,7 +99,10 @@ export function generatePlaywrightScript(
   const pageUrl = scenarios[0].pageUrl;
   const describeLabel = pageTitle ?? derivePageTitle(pageUrl);
   const className = toClassName(describeLabel) + "Page";
-  const pomRelPath = `./pom/${toFileName(describeLabel)}.page`;
+  // Use pomSlugName when provided so the import path matches the actual file on disk.
+  const pomRelPath = pomSlugName
+    ? `./pom/${pomSlugName}.page`
+    : `./pom/${toFileName(describeLabel)}.page`;
 
   // ── 1. Collect every unique locator across all scenarios ─────────────────
   const locatorRegistry = buildLocatorRegistry(scenarios);
@@ -370,7 +380,9 @@ function actionToSpec(
       return `${pad}await expect(page.getByText('${escStr(action.text)}')).toBeVisible();`;
 
     case "verify_url":
-      return `${pad}await expect(page).toHaveURL(/${escRegex(action.pattern)}/);`;
+      // Use string matching (toHaveURL accepts partial strings) to avoid
+      // broken JS regex literals when the pattern contains forward slashes.
+      return `${pad}await expect(page).toHaveURL('${escStr(action.pattern)}');`;
 
     case "wait_for": {
       if (action.strategy === "network-idle") return `${pad}await page.waitForLoadState('networkidle');`;
@@ -425,7 +437,7 @@ function expectedResultToAssertions(
   if (expected.visibleLocator) lines.push(`${pad}await expect(${locExpr(expected.visibleLocator)}).toBeVisible();`);
   for (const vl of expected.visibleLocators ?? [])    lines.push(`${pad}await expect(${locExpr(vl)}).toBeVisible();`);
   for (const nvl of expected.notVisibleLocators ?? []) lines.push(`${pad}await expect(${locExpr(nvl)}).not.toBeVisible();`);
-  if (expected.urlNotContains) lines.push(`${pad}await expect(page).not.toHaveURL(/${escRegex(expected.urlNotContains)}/);`);
+  if (expected.urlNotContains) lines.push(`${pad}await expect(page).not.toHaveURL(/${escRegex(expected.urlNotContains).replace(/\//g, "\\/")}/);`);
   if (expected.textNotContains) lines.push(`${pad}await expect(page.getByText('${escStr(expected.textNotContains)}')).not.toBeVisible();`);
   if (expected.attribute) {
     const expr = locExpr(expected.attribute.target);

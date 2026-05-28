@@ -31,8 +31,9 @@ export const workflowCommand: CliCommand = {
     options: [
       { flag: "--input", description: "Workflow YAML input file (required)" },
       { flag: "--skip-preflight", description: "Skip P0 environment checks (boolean)" },
-      { flag: "--auto-specs", description: "Emit Playwright POM scripts after test-case generation (default: always on)" },
-      { flag: "--overwrite-pom", description: "Overwrite existing POM files (default: false — preserves hand-edited helpers)" },
+      { flag: "--auto-specs", description: "Emit POM scripts after test-case generation (default: always on)" },
+      { flag: "--language", description: "Script output language: python (default) | typescript" },
+      { flag: "--overwrite-pom", description: "Overwrite existing POM/page-object files (default: false — preserves hand-edited helpers)" },
     ],
   },
   run: async (args) => {
@@ -147,25 +148,27 @@ export const workflowCommand: CliCommand = {
         continue;
       }
 
-      // ── Step: Generate Playwright automation scripts ──────────────────────
-      // Convert every YAML test case into a runnable .spec.ts file so the
-      // test suite is always backed by generated, executable automation code.
+      // ── Step: Generate automation scripts (Python POM by default) ───────────
+      // Generates Python pytest + Page Object files from the YAML test cases.
+      // Use --language=typescript to emit TypeScript .spec.ts + .page.ts instead.
       let scriptsResult;
+      const scriptLanguage = (flagString(args, "language") ?? "python") as "python" | "typescript";
       try {
         scriptsResult = await generateScriptsForSuite({
           generationResult: generated,
           project: input.project,
           role: role.name,
+          language: scriptLanguage,
           outputDir: input.generation.scriptsDir,
           istqbAnnotations: true,
           overwritePom: flagBool(args, "overwrite-pom"),
         });
         process.stdout.write(
-          `  scripts: ${scriptsResult.specFiles.length} spec + ${scriptsResult.pomFiles.length} POM file(s) → ${scriptsResult.scriptsDir}\n`,
+          `  scripts [${scriptsResult.language}]: ${scriptsResult.specFiles.length} test + ${scriptsResult.pomFiles.length} page-object file(s) → ${scriptsResult.scriptsDir}\n`,
         );
         if (scriptsResult.pomFilesPreserved > 0) {
           process.stdout.write(
-            `  scripts: ${scriptsResult.pomFilesPreserved} POM file(s) preserved (hand-edits kept)\n`,
+            `  scripts: ${scriptsResult.pomFilesPreserved} page-object file(s) preserved (hand-edits kept)\n`,
           );
         }
         if (scriptsResult.skippedPages > 0) {
