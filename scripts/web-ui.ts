@@ -13,14 +13,14 @@
  *   PORT=8080 HOST=0.0.0.0 npm run web-ui
  */
 import "dotenv/config";
-import express from "express";
+import express, { type Request, type Response } from "express";
 import cors from "cors";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { stringify as stringifyYaml } from "yaml";
+import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { generateRunId } from "../lib/cli/run-id.js";
 import type { ServerResponse } from "node:http";
@@ -86,9 +86,16 @@ async function createProjectFiles(opts: {
   projectName: string; baseUrl: string; loginUrl?: string;
   roleName: string; username?: string; password?: string;
   usernameLabel?: string; passwordLabel?: string; submitLabel?: string;
-  maxPages: number; maxDepth: number;
 }): Promise<{ projectFile: string; authFile?: string; credentialSource?: string }> {
   const slug = safeSlug(opts.projectName);
+  const projectFilePath = path.join(rootDir, "inputs", "projects", `${slug}.yaml`);
+  let crawlCfg = { maxPages: 10, maxDepth: 3, maxConcurrency: 2, perHostQps: 2, includeSubdomains: false, ignoreRobots: false };
+  if (existsSync(projectFilePath)) {
+    try {
+      const existing = parseYaml(await readFile(projectFilePath, "utf8")) as Record<string, unknown>;
+      if (existing?.crawl && typeof existing.crawl === "object") Object.assign(crawlCfg, existing.crawl);
+    } catch { /* use defaults */ }
+  }
   let authFile: string | undefined;
 
   // Use form values; if blank, fall back to env vars already present in .env
@@ -134,7 +141,7 @@ async function createProjectFiles(opts: {
 
   const yaml = {
     project: opts.projectName, baseUrl: opts.baseUrl, roles,
-    crawl: { maxPages: opts.maxPages, maxDepth: opts.maxDepth, maxConcurrency: 2, perHostQps: 2, includeSubdomains: false, ignoreRobots: false },
+    crawl: crawlCfg,
     generation: { outputDir: "tests/generated", maxScenariosPerPage: 14, fallbackSmoke: true },
     run: {
       testLevel: "system", browsers: ["chromium"], locales: [],
@@ -166,8 +173,6 @@ const WorkflowSchema = z.object({
   passwordLabel: z.string().max(80).optional(),
   submitLabel:   z.string().max(80).optional(),
   provider:      providerEnum,
-  maxPages:      z.number().int().min(1).max(200).default(10),
-  maxDepth:      z.number().int().min(0).max(10).default(3),
 });
 
 const QuickSchema = z.object({
@@ -195,9 +200,67 @@ const RerunSchema = z.object({
   provider:   providerEnum,
 });
 
+const CrawlOnlySchema = z.object({
+  command: z.literal("crawl-only"),
+  project: z.string().min(1),
+  role:    z.string().min(1),
+});
+
+const GenerateCasesSchema = z.object({
+  command:  z.literal("generate-cases"),
+  project:  z.string().min(1),
+  role:     z.string().min(1),
+  provider: providerEnum,
+});
+
+const GenScriptsSchema = z.object({
+  command:  z.literal("gen-scripts"),
+  project:  z.string().min(1),
+  role:     z.string().min(1),
+  language: z.enum(["python", "typescript"]).default("python"),
+});
+
+const RunSuiteOnlySchema = z.object({
+  command: z.literal("run-suite"),
+  project: z.string().min(1),
+  role:    z.string().min(1),
+});
+
 const RunSchema = z.discriminatedUnion("command", [
   WorkflowSchema, QuickSchema, AnalyzeSchema, AuthDetectSchema, RerunSchema,
+  CrawlOnlySchema, GenerateCasesSchema, GenScriptsSchema, RunSuiteOnlySchema,
 ]);
+
+// ─── Project helpers ──────────────────────────────────────────────────────────
+
+interface ProjectInfo {
+  name: string; baseUrl: string; outputDir: string;
+  crawl: { maxPages: number; maxDepth: number; maxConcurrency: number; perHostQps: number };
+  role: { name: string; authRecipe?: string };
+}
+
+async function readProjectInfo(slug: string, roleName: string): Promise<ProjectInfo | null> {
+  const p = path.join(rootDir, "inputs", "projects", `${slug}.yaml`);
+  if (!existsSync(p)) return null;
+  const c = parseYaml(await readFile(p, "utf8")) as Record<string, unknown>;
+  const roles = (c.roles as { name: string; authRecipe?: string }[]) ?? [];
+  const role = roles.find(r => r.name === roleName) ?? { name: roleName };
+  const crawlRaw = (c.crawl ?? {}) as Record<string, number>;
+  return {
+    name: (c.project as string) ?? slug,
+    baseUrl: c.baseUrl as string,
+    outputDir: ((c.generation as Record<string, string>)?.outputDir) ?? "tests/generated",
+    crawl: { maxPages: 25, maxDepth: 3, maxConcurrency: 2, perHostQps: 2, ...crawlRaw },
+    role,
+  };
+}
+
+function latestSitemapInDir(dir: string): Promise<string | undefined> {
+  return readdir(dir).then(files => {
+    const sorted = files.filter(f => f.endsWith(".json")).sort().reverse();
+    return sorted.length ? path.join(dir, sorted[0]) : undefined;
+  }).catch(() => undefined);
+}
 
 // ─── Spawn helper ─────────────────────────────────────────────────────────────
 
@@ -231,10 +294,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get("/", (_req, res) => res.send(PAGE_HTML));
+app.get("/", (_req: Request, res: Response) => res.send(PAGE_HTML));
 
 // ── GET /runs — list previous run IDs for rerun dropdown ─────────────────────
-app.get("/runs", async (_req, res) => {
+app.get("/runs", async (_req: Request, res: Response) => {
   const jsonDir = path.join(rootDir, "reports", "json");
   const result: { runId: string }[] = [];
   try {
@@ -247,7 +310,7 @@ app.get("/runs", async (_req, res) => {
 });
 
 // ── POST /run ─────────────────────────────────────────────────────────────────
-app.post("/run", async (req, res) => {
+app.post("/run", async (req: Request, res: Response) => {
   const parsed = RunSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid input" });
@@ -278,7 +341,6 @@ app.post("/run", async (req, res) => {
         usernameLabel: input.usernameLabel,
         passwordLabel: input.passwordLabel,
         submitLabel:   input.submitLabel,
-        maxPages:      input.maxPages,    maxDepth: input.maxDepth,
       }));
     } catch (err) {
       res.status(500).json({ error: `Config file creation failed: ${(err as Error).message}` });
@@ -305,11 +367,62 @@ app.post("/run", async (req, res) => {
   } else if (input.command === "auth-detect") {
     argv = ["vite-node", script, "auth", "detect", "--url", input.loginUrl];
 
-  } else {
-    // rerun
+  } else if (input.command === "rerun") {
     argv = ["vite-node", script, "rerun", "--from", input.fromRunId];
     if (input.failedOnly) argv.push("--failed-only");
     env.AI_TEST_DEFAULT_PROVIDER = input.provider;
+
+  } else if (input.command === "crawl-only") {
+    const info = await readProjectInfo(input.project, input.role);
+    if (!info) { res.status(400).json({ error: `Project not found: ${input.project}` }); return; }
+    argv = ["vite-node", script, "crawl", "--url", info.baseUrl,
+      "--max-pages", String(info.crawl.maxPages), "--max-depth", String(info.crawl.maxDepth),
+      "--max-concurrency", String(info.crawl.maxConcurrency), "--per-host-qps", String(info.crawl.perHostQps),
+    ];
+    const ss = path.join(rootDir, "reports", "auth", input.project, `${input.role}.storage-state.json`);
+    if (existsSync(ss)) argv.push("--storage-state", ss);
+    else if (info.role.authRecipe) argv.push("--auth-recipe", path.resolve(rootDir, info.role.authRecipe));
+
+  } else if (input.command === "generate-cases") {
+    const info = await readProjectInfo(input.project, input.role);
+    if (!info) { res.status(400).json({ error: `Project not found: ${input.project}` }); return; }
+    const manifestPath = path.join(rootDir, info.outputDir, input.project, input.role, "manifest.json");
+    let sitemapPath: string | undefined;
+    if (existsSync(manifestPath)) {
+      const mf = JSON.parse(await readFile(manifestPath, "utf8")) as { siteMapPath: string };
+      const abs = path.resolve(rootDir, mf.siteMapPath);
+      if (existsSync(abs)) sitemapPath = abs;
+    }
+    if (!sitemapPath) sitemapPath = await latestSitemapInDir(path.join(rootDir, "reports", "sitemaps"));
+    if (!sitemapPath) { res.status(400).json({ error: "No sitemaps found. Run Crawl first." }); return; }
+    argv = ["vite-node", script, "generate", "--site-map", sitemapPath,
+      "--project", info.name, "--role", input.role];
+    const ss = path.join(rootDir, "reports", "auth", input.project, `${input.role}.storage-state.json`);
+    if (existsSync(ss)) argv.push("--storage-state", ss);
+    env.AI_TEST_DEFAULT_PROVIDER = input.provider;
+
+  } else if (input.command === "gen-scripts") {
+    const info = await readProjectInfo(input.project, input.role);
+    if (!info) { res.status(400).json({ error: `Project not found: ${input.project}` }); return; }
+    const manifestPath = path.join(rootDir, info.outputDir, input.project, input.role, "manifest.json");
+    if (!existsSync(manifestPath)) { res.status(400).json({ error: "No test cases found. Run Generate Cases first." }); return; }
+    argv = ["vite-node", script, "generate-scripts", "--manifest", manifestPath, `--language=${input.language}`];
+
+  } else {
+    // run-suite
+    const info = await readProjectInfo(input.project, input.role);
+    if (!info) { res.status(400).json({ error: `Project not found: ${input.project}` }); return; }
+    const casesDir = path.join(rootDir, info.outputDir, input.project, input.role);
+    if (!existsSync(casesDir)) { res.status(400).json({ error: "No test cases found. Run Generate Cases first." }); return; }
+    argv = ["vite-node", script, "run-suite", "--cases-dir", casesDir, "--project", info.name, "--role", input.role];
+    const ss = path.join(rootDir, "reports", "auth", input.project, `${input.role}.storage-state.json`);
+    if (existsSync(ss)) argv.push("--storage-state", ss);
+    const manifestPath = path.join(casesDir, "manifest.json");
+    if (existsSync(manifestPath)) {
+      const mf = JSON.parse(await readFile(manifestPath, "utf8")) as { siteMapPath: string };
+      const smAbs = path.resolve(rootDir, mf.siteMapPath);
+      if (existsSync(smAbs)) argv.push("--site-map", smAbs);
+    }
   }
 
   const child = spawnCli(argv, env);
@@ -320,7 +433,7 @@ app.post("/run", async (req, res) => {
 });
 
 // ── POST /stop/:runId ─────────────────────────────────────────────────────────
-app.post("/stop/:runId", (req, res) => {
+app.post("/stop/:runId", (req: Request<{ runId: string }>, res: Response) => {
   const run = runs.get(req.params.runId);
   if (!run) { res.status(404).json({ error: "Run not found" }); return; }
   if (run.status !== "running") { res.status(400).json({ error: "Run not active" }); return; }
@@ -333,7 +446,7 @@ app.post("/stop/:runId", (req, res) => {
 });
 
 // ── GET /stream/:runId ────────────────────────────────────────────────────────
-app.get("/stream/:runId", (req, res) => {
+app.get("/stream/:runId", (req: Request<{ runId: string }>, res: Response) => {
   const run = runs.get(req.params.runId);
   if (!run) { res.status(404).json({ error: "Run not found" }); return; }
   res.setHeader("Content-Type", "text/event-stream");
@@ -348,7 +461,7 @@ app.get("/stream/:runId", (req, res) => {
 });
 
 // ── GET /ping?url=<url> — reachability check used by the UI pre-flight banner ─
-app.get("/ping", async (req, res) => {
+app.get("/ping", async (req: Request, res: Response) => {
   const target = String(req.query.url ?? "");
   if (!target.startsWith("http")) { res.json({ ok: false, reason: "invalid url" }); return; }
   try {
@@ -364,8 +477,37 @@ app.get("/ping", async (req, res) => {
   }
 });
 
+// ── GET /projects — list projects + roles for dropdowns ──────────────────────
+app.get("/projects", async (_req: Request, res: Response) => {
+  const projectsDir = path.join(rootDir, "inputs", "projects");
+  const result: {
+    slug: string; name: string; baseUrl: string;
+    roles: { name: string; hasCases: boolean; hasManifest: boolean }[];
+  }[] = [];
+  try {
+    for (const f of (await readdir(projectsDir)).filter(f => /\.ya?ml$/.test(f))) {
+      try {
+        const slug = f.replace(/\.ya?ml$/, "");
+        const c = parseYaml(await readFile(path.join(projectsDir, f), "utf8")) as Record<string, unknown>;
+        const outputDir = ((c.generation as Record<string, string>)?.outputDir) ?? "tests/generated";
+        const roles = ((c.roles as { name: string }[]) ?? []).map(r => {
+          const casesDir = path.join(rootDir, outputDir, slug, r.name);
+          return {
+            name: r.name,
+            hasCases: existsSync(casesDir),
+            hasManifest: existsSync(path.join(casesDir, "manifest.json")),
+          };
+        });
+        result.push({ slug, name: (c.project as string) ?? slug, baseUrl: c.baseUrl as string, roles });
+      } catch { /* skip malformed */ }
+    }
+  } catch { /* no projects dir */ }
+  result.sort((a, b) => a.name.localeCompare(b.name));
+  res.json(result);
+});
+
 // ── GET /reports ──────────────────────────────────────────────────────────────
-app.get("/reports", async (_req, res) => {
+app.get("/reports", async (_req: Request, res: Response) => {
   const htmlDir = path.join(rootDir, "reports", "html");
   const results: { runId: string; url: string }[] = [];
   try {
@@ -582,6 +724,18 @@ const PAGE_HTML = /* html */`<!doctype html>
       <button type="button" class="cmd-btn" data-cmd="rerun" onclick="setCmd('rerun')">
         <span class="icon">🔁</span>Rerun
       </button>
+      <button type="button" class="cmd-btn" data-cmd="crawl-only" onclick="setCmd('crawl-only')">
+        <span class="icon">🕷</span>Crawl
+      </button>
+      <button type="button" class="cmd-btn" data-cmd="generate-cases" onclick="setCmd('generate-cases')">
+        <span class="icon">🤖</span>Gen Cases
+      </button>
+      <button type="button" class="cmd-btn" data-cmd="gen-scripts" onclick="setCmd('gen-scripts')">
+        <span class="icon">📝</span>Gen Scripts
+      </button>
+      <button type="button" class="cmd-btn" data-cmd="run-suite" onclick="setCmd('run-suite')">
+        <span class="icon">▶</span>Run Suite
+      </button>
     </div>
 
     <div class="cmd-desc" id="cmd-desc"></div>
@@ -602,8 +756,6 @@ const PAGE_HTML = /* html */`<!doctype html>
           <input name="baseUrl" type="url" placeholder="https://myapp.com" id="baseUrl-input" oninput="scheduleReachCheck(this.value)"/>
           <div class="reach-banner" id="reach-banner"></div>
         </div>
-        <input name="maxPages" type="hidden" value="10"/>
-        <input name="maxDepth" type="hidden" value="3"/>
 
         <div class="sec">Authentication <span style="font-weight:400;text-transform:none;font-size:.8rem">(optional)</span></div>
         <div class="field">
@@ -684,6 +836,85 @@ const PAGE_HTML = /* html */`<!doctype html>
         </label>
       </div>
 
+      <!-- ═══ CRAWL ONLY ════════════════════════════════════════════════════ -->
+      <div class="cmd-section" id="sec-crawl-only">
+        <div class="sec">Project</div>
+        <div class="field-row">
+          <div class="field">
+            <label>Project *</label>
+            <select name="crawlProject" id="crawl-only-project" onchange="onProjectChange('crawl-only')">
+              <option value="">— select —</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Role *</label>
+            <select name="crawlRole" id="crawl-only-role"><option value="">— select —</option></select>
+          </div>
+        </div>
+        <div class="hint">Re-crawls site using maxPages/maxDepth from project YAML. Auth state reused if available.</div>
+      </div>
+
+      <!-- ═══ GENERATE CASES ════════════════════════════════════════════════ -->
+      <div class="cmd-section" id="sec-generate-cases">
+        <div class="sec">Project</div>
+        <div class="field-row">
+          <div class="field">
+            <label>Project *</label>
+            <select name="genCasesProject" id="generate-cases-project" onchange="onProjectChange('generate-cases')">
+              <option value="">— select —</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Role *</label>
+            <select name="genCasesRole" id="generate-cases-role"><option value="">— select —</option></select>
+          </div>
+        </div>
+        <div class="hint">AI generates test cases from sitemap. Existing blocks preserved unless scenario hash changes.</div>
+      </div>
+
+      <!-- ═══ GENERATE SCRIPTS ══════════════════════════════════════════════ -->
+      <div class="cmd-section" id="sec-gen-scripts">
+        <div class="sec">Project</div>
+        <div class="field-row">
+          <div class="field">
+            <label>Project *</label>
+            <select name="genScriptsProject" id="gen-scripts-project" onchange="onProjectChange('gen-scripts')">
+              <option value="">— select —</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Role *</label>
+            <select name="genScriptsRole" id="gen-scripts-role"><option value="">— select —</option></select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Language</label>
+          <select name="genScriptsLang">
+            <option value="python">Python — pytest + Playwright + POM</option>
+            <option value="typescript">TypeScript — Playwright .spec.ts + POM</option>
+          </select>
+        </div>
+        <div class="hint">Requires existing test cases (manifest.json). Custom zones never overwritten.</div>
+      </div>
+
+      <!-- ═══ RUN SUITE ═════════════════════════════════════════════════════ -->
+      <div class="cmd-section" id="sec-run-suite">
+        <div class="sec">Project</div>
+        <div class="field-row">
+          <div class="field">
+            <label>Project *</label>
+            <select name="runSuiteProject" id="run-suite-project" onchange="onProjectChange('run-suite')">
+              <option value="">— select —</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Role *</label>
+            <select name="runSuiteRole" id="run-suite-role"><option value="">— select —</option></select>
+          </div>
+        </div>
+        <div class="hint">Runs YAML keyword test suite → HTML/JUnit report. Auth state reused if available.</div>
+      </div>
+
       <!-- ═══ Provider (workflow, quick, rerun) ════════════════════════════ -->
       <div class="cmd-section active provider-row" id="sec-provider">
         <div class="sec">AI Provider</div>
@@ -740,11 +971,15 @@ const PAGE_HTML = /* html */`<!doctype html>
 
 <script>
   const CMD_META = {
-    workflow:    { label:'Run Workflow',   desc:'Init project config → crawl site → generate ISTQB test cases → run → HTML report', provider:true },
-    quick:       { label:'Quick Run',      desc:'One-shot: URL only → auto-bootstrap config → run full pipeline', provider:true },
-    analyze:     { label:'Analyze Page',   desc:'Open a URL, take a screenshot and produce a PageAnalysis JSON', provider:false },
-    'auth-detect':{ label:'Detect Auth',  desc:'Visit the login page, detect form fields and generate an auth recipe YAML', provider:false },
-    rerun:       { label:'Rerun',          desc:'Re-execute scenarios from a previous run (failed-only or all)', provider:true },
+    workflow:          { label:'Run Workflow',    desc:'Init project config → crawl → AI generate test cases → run suite → HTML report', provider:true },
+    quick:             { label:'Quick Run',       desc:'One-shot: URL only → auto-bootstrap config → run full pipeline', provider:true },
+    analyze:           { label:'Analyze Page',    desc:'Open a URL, take a screenshot and produce a PageAnalysis JSON', provider:false },
+    'auth-detect':     { label:'Detect Auth',     desc:'Visit the login page, detect form fields and generate an auth recipe YAML', provider:false },
+    rerun:             { label:'Rerun',            desc:'Re-execute scenarios from a previous run (failed-only or all)', provider:true },
+    'crawl-only':      { label:'Crawl Site',      desc:'Re-crawl site → update sitemap. Uses maxPages/maxDepth from project YAML. Does NOT regenerate test cases.', provider:false },
+    'generate-cases':  { label:'Generate Cases',  desc:'AI generates/updates test cases from latest sitemap. Existing blocks preserved unless scenario hash changes.', provider:true },
+    'gen-scripts':     { label:'Generate Scripts',desc:'Generate Python pytest or TypeScript Playwright scripts from existing test cases. Custom zones never overwritten.', provider:false },
+    'run-suite':       { label:'Run Suite',       desc:'Run YAML keyword test suite for selected project/role → HTML + JUnit report.', provider:false },
   };
 
   let currentCmd = 'workflow';
@@ -821,6 +1056,48 @@ const PAGE_HTML = /* html */`<!doctype html>
 
     // Load run IDs for rerun
     if (cmd === 'rerun') loadRunIds();
+    // Load project/role dropdowns for step commands
+    if (['crawl-only','generate-cases','gen-scripts','run-suite'].includes(cmd)) loadProjects(cmd);
+  }
+
+  let _projects = [];
+  async function loadProjects(cmd) {
+    if (!_projects.length)
+      _projects = await fetch('/projects').then(r => r.json()).catch(() => []);
+    const projSel = document.getElementById(cmd + '-project');
+    if (!projSel) return;
+    const prev = projSel.value;
+    projSel.innerHTML = '<option value="">— select project —</option>';
+    _projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.slug;
+      opt.textContent = p.name + '  (' + p.baseUrl + ')';
+      if (p.slug === prev) opt.selected = true;
+      projSel.appendChild(opt);
+    });
+    onProjectChange(cmd, true);
+  }
+
+  function onProjectChange(cmd, keepRole) {
+    const projSel = document.getElementById(cmd + '-project');
+    const roleSel = document.getElementById(cmd + '-role');
+    if (!projSel || !roleSel) return;
+    const project = _projects.find(p => p.slug === projSel.value);
+    const prev = keepRole ? roleSel.value : '';
+    roleSel.innerHTML = '<option value="">— select role —</option>';
+    if (project) {
+      project.roles.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.name;
+        const tags = [];
+        if (!r.hasCases)   tags.push('no cases');
+        if (!r.hasManifest) tags.push('no manifest');
+        opt.textContent = r.name + (tags.length ? '  [' + tags.join(', ') + ']' : '');
+        if (r.name === prev) opt.selected = true;
+        roleSel.appendChild(opt);
+      });
+      if (project.roles.length === 1) roleSel.value = project.roles[0].name;
+    }
   }
 
   async function loadRunIds() {
@@ -861,8 +1138,6 @@ const PAGE_HTML = /* html */`<!doctype html>
         passwordLabel: form.passwordLabel.value.trim() || undefined,
         submitLabel:   form.submitLabel.value.trim() || undefined,
         provider:      form.provider.value,
-        maxPages:      Number(form.maxPages.value),
-        maxDepth:      Number(form.maxDepth.value),
       });
     } else if (cmd === 'quick') {
       Object.assign(body, {
@@ -880,6 +1155,28 @@ const PAGE_HTML = /* html */`<!doctype html>
         fromRunId:  form.fromRunId.value,
         failedOnly: form.failedOnly.checked,
         provider:   form.provider.value,
+      });
+    } else if (cmd === 'crawl-only') {
+      Object.assign(body, {
+        project: form.crawlProject.value,
+        role:    form.crawlRole.value,
+      });
+    } else if (cmd === 'generate-cases') {
+      Object.assign(body, {
+        project:  form.genCasesProject.value,
+        role:     form.genCasesRole.value,
+        provider: form.provider.value,
+      });
+    } else if (cmd === 'gen-scripts') {
+      Object.assign(body, {
+        project:  form.genScriptsProject.value,
+        role:     form.genScriptsRole.value,
+        language: form.genScriptsLang.value,
+      });
+    } else if (cmd === 'run-suite') {
+      Object.assign(body, {
+        project: form.runSuiteProject.value,
+        role:    form.runSuiteRole.value,
       });
     }
 
@@ -929,7 +1226,7 @@ const PAGE_HTML = /* html */`<!doctype html>
         const code = parseInt(line.match(/exitCode=(-?\\d+)/)?.[1] ?? '-1', 10);
         setRunning(false);
         dot.className = 'dot ' + (code === 0 ? 'done' : 'error');
-        if (code === 0 && (cmd === 'workflow' || cmd === 'quick' || cmd === 'rerun'))
+        if (code === 0 && ['workflow','quick','rerun','run-suite'].includes(cmd))
           showReport(runId);
         loadReports();
         es.close(); return;

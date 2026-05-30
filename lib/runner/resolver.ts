@@ -16,5 +16,9 @@ export function resolveLocator(page: Page, loc: Locator): PlaywrightLocator {
       return page.getByText(loc.text, { exact: false });
     case "testId":
       return page.getByTestId(loc.value);
+    case "css":
+      return page.locator(loc.selector);
+    case "xpath":
+      return page.locator(`xpath=${loc.selector}`);
   }
 }

@@ -146,7 +146,7 @@ export async function generatePythonAutomationScripts(
       continue;
     }
 
-    // Page Object file — protected from overwrite unless --overwrite-pom
+    // Page Object file — always update locators, preserve custom helpers
     const pagePath = path.join(pagesDir, `${generated.pageModuleName}.py`);
     const pageExists = await fileExists(pagePath);
     let pageOverwritten = false;
@@ -155,6 +155,9 @@ export async function generatePythonAutomationScripts(
       pageWritten++;
       pageOverwritten = pageExists;
     } else {
+      // Smart merge: replace header+locators, keep custom helpers zone
+      const merged = await mergePomFile(pagePath, generated.pageCode);
+      await writeFile(pagePath, merged, "utf8");
       pagePreserved++;
     }
 
@@ -216,17 +219,44 @@ const CUSTOM_START = "# ──── ai-test:custom-start ────";
 
 async function mergeTestFile(existingPath: string, newCode: string): Promise<string> {
   const existing = await readFile(existingPath, "utf8");
-  const customIdx = existing.indexOf(CUSTOM_START);
-  if (customIdx === -1) return newCode;  // no custom zone — full overwrite
 
-  const customZone = existing.slice(customIdx);
+  // Find CUSTOM_START as an exact standalone line (not as part of docstring or corrupted marker)
+  // and only AFTER the AUTO_END marker
+  const existingLines = existing.split("\n");
+  let autoEndSeen = false;
+  let customStartIdx = -1;  // byte offset in `existing`
+  let offset = 0;
+  for (const line of existingLines) {
+    if (!autoEndSeen && line.trimEnd() === AUTO_END) autoEndSeen = true;
+    else if (autoEndSeen && line.trimEnd() === CUSTOM_START) {
+      customStartIdx = offset;
+      break;
+    }
+    offset += line.length + 1; // +1 for \n
+  }
+  if (customStartIdx === -1) return newCode;  // no valid custom zone — full overwrite
 
-  // Replace everything from auto-end onward with the custom zone
+  const customZone = existing.slice(customStartIdx);
+
   const autoEndInNew = newCode.indexOf(AUTO_END);
   if (autoEndInNew === -1) return newCode;
 
-  const newAutoZone = newCode.slice(0, autoEndInNew + AUTO_END.length);
-  return newAutoZone + "\n\n\n" + customZone;
+  return newCode.slice(0, autoEndInNew + AUTO_END.length) + "\n\n\n" + customZone;
+}
+
+// ---------------------------------------------------------------------------
+// Smart POM merger: replace locators section, keep custom helpers
+// ---------------------------------------------------------------------------
+
+const POM_CUSTOM_MARKER = "# ── Custom helpers";
+
+async function mergePomFile(existingPath: string, newCode: string): Promise<string> {
+  const existing = await readFile(existingPath, "utf8");
+  const customIdx = existing.indexOf(POM_CUSTOM_MARKER);
+  const newCustomIdx = newCode.indexOf(POM_CUSTOM_MARKER);
+  if (customIdx === -1 || newCustomIdx === -1) return newCode;
+  // Replace everything up to (not including) the custom marker with the new code's auto section
+  return newCode.slice(0, newCustomIdx) + existing.slice(customIdx);
 }
 
 // ---------------------------------------------------------------------------

@@ -47,18 +47,18 @@ export const Locator = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("label"), text: z.string().min(1) }),
   z.object({ kind: z.literal("text"), text: z.string().min(1) }),
   z.object({ kind: z.literal("testId"), value: z.string().min(1) }),
+  z.object({ kind: z.literal("css"),   selector: z.string().min(1) }),
+  z.object({ kind: z.literal("xpath"), selector: z.string().min(1) }),
 ]);
 export type Locator = z.infer<typeof Locator>;
 
 export function locatorKey(loc: Locator): string {
   switch (loc.kind) {
-    case "role":
-      return `role:${loc.role}:${loc.name ?? ""}`;
-    case "label":
-      return `label:${loc.text}`;
-    case "text":
-      return `text:${loc.text}`;
-    case "testId":
-      return `testId:${loc.value}`;
+    case "role":   return `role:${loc.role}:${loc.name ?? ""}`;
+    case "label":  return `label:${loc.text}`;
+    case "text":   return `text:${loc.text}`;
+    case "testId": return `testId:${loc.value}`;
+    case "css":    return `css:${loc.selector}`;
+    case "xpath":  return `xpath:${loc.selector}`;
   }
 }

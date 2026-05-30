@@ -100,8 +100,19 @@ export async function runTestCaseSuite(
 
   for (const file of files) {
     let parsed: ExecutableScenario[];
+    let preResolved = false;
     try {
-      parsed = await parseTestCaseFile(file);
+      // Prefer pre-resolved scenarios.json sidecar (CSS/XPath locators from AI analysis)
+      const scenariosJson = file.replace(/\.(yaml|yml|md)$/i, ".scenarios.json");
+      if (await readFile(scenariosJson, "utf8").then(() => true).catch(() => false)) {
+        const raw = JSON.parse(await readFile(scenariosJson, "utf8"));
+        parsed = Array.isArray(raw)
+          ? raw.map((s) => ExecutableScenario.parse(s))
+          : [];
+        preResolved = true;
+      } else {
+        parsed = await parseTestCaseFile(file);
+      }
     } catch (err) {
       filesSkipped.push({
         filePath: file,
@@ -133,14 +144,16 @@ export async function runTestCaseSuite(
       storageStatePath,
     });
 
-    const baseScenarios = parsed.map((scenario) => {
-      const mapped = mapStepsToActions(scenario.steps, analysis, scenario.pageUrl);
-      return ExecutableScenario.parse({
-        ...scenario,
-        steps: mapped.steps,
-        warnings: [...scenario.warnings, ...mapped.warnings],
-      });
-    });
+    const baseScenarios = preResolved
+      ? parsed  // already resolved — skip mapStepsToActions text matching
+      : parsed.map((scenario) => {
+          const mapped = mapStepsToActions(scenario.steps, analysis, scenario.pageUrl);
+          return ExecutableScenario.parse({
+            ...scenario,
+            steps: mapped.steps,
+            warnings: [...scenario.warnings, ...mapped.warnings],
+          });
+        });
 
     // Browser × locale matrix (REQ-013).
     for (const browser of browsers) {

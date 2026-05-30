@@ -167,7 +167,8 @@ function locatorKey(loc: Locator): string {
     case "label":  return `label::${loc.text}`;
     case "text":   return `text::${loc.text}`;
     case "testId": return `testId::${loc.value}`;
-    default:       return JSON.stringify(loc);
+    case "css":    return `css::${loc.selector}`;
+    case "xpath":  return `xpath::${loc.selector}`;
   }
 }
 
@@ -177,7 +178,8 @@ function locatorToSnakeName(loc: Locator): string {
     case "label":  return toSnake(loc.text);
     case "text":   return toSnake(loc.text);
     case "testId": return toSnake(loc.value);
-    default:       return "element";
+    case "css":    return toSnake(loc.selector.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 40));
+    case "xpath":  return toSnake(loc.selector.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 40));
   }
 }
 
@@ -277,10 +279,13 @@ function buildTestFile(opts: {
     ``,
     `AUTO zone: managed by ai-automation-framework.`,
     `Individual test methods are updated only when their scenario changes.`,
-    `CUSTOM zone (below # ──── ai-test:custom-start ────): yours to edit,`,
+    `CUSTOM zone (below ai-test:custom-start marker): yours to edit freely,`,
     `never touched by ai-automation-framework.`,
     `"""`,
     `from __future__ import annotations`,
+    ``,
+    `import os`,
+    `import re`,
     ``,
     `import pytest`,
     `from playwright.sync_api import Page, expect`,
@@ -369,7 +374,7 @@ function buildTestMethod(
     lines.push(`${inner}# Step ${step.index + 1}: ${step.description}`);
     const stepCode = isGoto
       ? `${inner}${POM_VAR}.goto()`
-      : actionToPy(step.action, locatorRegistry, inner);
+      : actionToPy(step.action, locatorRegistry, inner, scenario.expectedResult, scenario.type);
 
     lines.push(stepCode ?? `${inner}# TODO: unsupported action "${(step.action as { keyword: string }).keyword}"`);
     lines.push("");
@@ -397,6 +402,8 @@ function actionToPy(
   action: Action,
   registry: LocatorRegistry,
   pad: string,
+  expectedResult?: ExpectedResult,
+  scenarioType?: string,
 ): string | null {
   switch (action.keyword) {
     case "open_page":
@@ -405,20 +412,43 @@ function actionToPy(
     case "click":
       return `${pad}${POM_VAR}.${field(action.target, registry)}.click()`;
 
-    case "fill":
-      return `${pad}${POM_VAR}.${field(action.target, registry)}.fill("${escPy(action.value)}")`;
+    case "fill": {
+      // Only use env vars for positive scenarios — negative/boundary tests need literal bad values
+      const envKey = scenarioType === "positive" ? sensitiveEnvVar(action.target) : null;
+      const fillVal = envKey
+        ? `os.environ.get("${envKey}", "${escPy(action.value)}")`
+        : `"${escPy(action.value)}"`;
+      return `${pad}${POM_VAR}.${field(action.target, registry)}.fill(${fillVal})`;
+    }
 
     case "select":
       return `${pad}${POM_VAR}.${field(action.target, registry)}.select_option("${escPy(action.value)}")`;
 
-    case "verify_text":
+    case "verify_text": {
+      const txt = action.text;
+      // If expected result says this text should NOT appear, invert assertion
+      const isNegated =
+        expectedResult?.textNotContains === txt ||
+        (expectedResult?.textNotContains && txt.includes(expectedResult.textNotContains)) ||
+        expectedResult?.notVisibleLocators?.some(
+          l => action.target && locatorKey(l) === locatorKey(action.target!),
+        );
       if (action.target) {
-        return `${pad}expect(${POM_VAR}.${field(action.target, registry)}).to_contain_text("${escPy(action.text)}")`;
+        return isNegated
+          ? `${pad}expect(${POM_VAR}.${field(action.target, registry)}).not_to_be_visible()`
+          : `${pad}expect(${POM_VAR}.${field(action.target, registry)}).to_contain_text("${escPy(txt)}")`;
       }
-      return `${pad}expect(page.get_by_text("${escPy(action.text)}")).to_be_visible()`;
+      return isNegated
+        ? `${pad}expect(page.get_by_text("${escPy(txt)}")).not_to_be_visible()`
+        : `${pad}expect(page.get_by_text("${escPy(txt)}")).to_be_visible()`;
+    }
 
-    case "verify_url":
-      return `${pad}expect(page).to_have_url("${escPy(action.pattern)}")`;
+    case "verify_url": {
+      const pat = action.pattern;
+      if (pat.startsWith("/") || (!pat.includes("://") && !pat.startsWith("http")))
+        return `${pad}expect(page).to_have_url(re.compile(r"${escPyRe(pat)}"))`;
+      return `${pad}expect(page).to_have_url("${escPy(pat)}")`;
+    }
 
     case "wait_for": {
       if (action.strategy === "network-idle") return `${pad}page.wait_for_load_state("networkidle")`;
@@ -470,8 +500,13 @@ function expectedResultToPy(
     return e ? `${POM_VAR}.${e.fieldName}` : locatorToPyExpr(loc, "page");
   };
 
-  if (expected.url)
-    lines.push(`${pad}expect(page).to_have_url("${escPy(expected.url)}")`);
+  if (expected.url) {
+    const u = expected.url;
+    if (u.startsWith("/") || (!u.includes("://") && !u.startsWith("http")))
+      lines.push(`${pad}expect(page).to_have_url(re.compile(r"${escPyRe(u)}"))`);
+    else
+      lines.push(`${pad}expect(page).to_have_url("${escPy(u)}")`);
+  }
   if (expected.text)
     lines.push(`${pad}expect(page.get_by_text("${escPy(expected.text)}")).to_be_visible()`);
   if (expected.visibleLocator)
@@ -510,8 +545,26 @@ function locatorToPyExpr(loc: Locator, ctx: string): string {
     case "label":  return `${ctx}.get_by_label("${escPy(loc.text)}")`;
     case "text":   return `${ctx}.get_by_text("${escPy(loc.text)}")`;
     case "testId": return `${ctx}.get_by_test_id("${escPy(loc.value)}")`;
+    case "css":    return `${ctx}.locator("${escPy(loc.selector)}")`;
+    case "xpath":  return `${ctx}.locator("xpath=${escPy(loc.selector)}")`;
     default:       return `${ctx}.locator("[data-unknown]")`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sensitive field detection — emit os.environ.get(...) instead of literal
+// ---------------------------------------------------------------------------
+
+const PASSWORD_RE = /password|passwd|pwd/i;
+const USERNAME_RE = /email|username|user(?!_id)/i;
+
+function sensitiveEnvVar(loc: Locator): "SITE_PASSWORD" | "SITE_USERNAME" | null {
+  const sel = loc.kind === "css" || loc.kind === "xpath" ? loc.selector
+    : loc.kind === "label" || loc.kind === "text" ? loc.text
+    : loc.kind === "role" ? (loc.name ?? "") : "";
+  if (PASSWORD_RE.test(sel)) return "SITE_PASSWORD";
+  if (USERNAME_RE.test(sel)) return "SITE_USERNAME";
+  return null;
 }
 
 // ---------------------------------------------------------------------------

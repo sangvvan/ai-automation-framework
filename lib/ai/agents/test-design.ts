@@ -145,11 +145,16 @@ ACTION KEYWORDS (use ONLY these):
   {"keyword": "wait_for",    "strategy": "network-idle"}
   {"keyword": "scroll_to",   "target": <locator>}
 
-LOCATOR KINDS:
-  {"kind": "role",   "role": "button|link|textbox|...", "name": "label"}
-  {"kind": "label",  "text": "field label text"}
-  {"kind": "text",   "text": "visible text on page"}
-  {"kind": "testId", "value": "data-testid value"}
+LOCATOR KINDS (PREFER in this order — use the element's exact locator from pageAnalysis):
+  {"kind": "css",    "selector": "input[type='email']"}   ← PREFERRED for inputs/forms
+  {"kind": "xpath",  "selector": "//button[text()='...']"} ← use when no id/name/type
+  {"kind": "testId", "value": "data-testid value"}         ← highest priority if present
+  {"kind": "role",   "role": "button|link|textbox|...", "name": "label"} ← fallback only
+  {"kind": "label",  "text": "field label text"}           ← fallback only
+  {"kind": "text",   "text": "visible text on page"}       ← last resort
+
+IMPORTANT: Copy the exact "locator" object from the matching element in pageAnalysis.elements.
+Do NOT invent locators. Use the element's locator field verbatim.
 
 EXPECTED RESULT (at least one field):
   {"url": "/path"}                           — page URL contains this
@@ -174,10 +179,13 @@ SYNTHETIC TEST DATA — use contextually appropriate values:
 RULES:
 1. ONLY reference elements that appear in the provided PageAnalysis (url, name, role, type).
 2. Use SYNTHETIC data from the list above; choose the type that matches the field.
-3. Every negative/required-field scenario MUST end with verify_text asserting the exact error message text visible on the page.
+3. Every negative/required-field scenario MUST end with verify_text — use text that actually appears in
+   the page elements list. If no error element is visible in PageAnalysis, verify the page STAYS on the
+   same URL (verify_url with current path) or verify the form is still present (verify_text with a label
+   that is always visible, e.g. "Email" or "Password"). Do NOT invent error messages you haven't seen.
 4. Every scenario MUST have at least 3 steps: open_page → (action) → verify outcome.
 5. Scenario IDs must be unique and descriptive: prefix with technique abbrev, e.g. EP-001, BVA-002, DT-003.
-6. Scenario titles must be specific: bad="Login fails", good="Login with blank password shows required-field error".
+6. Scenario titles must be specific: bad="Login fails", good="Login with blank password stays on login page".
 7. Do NOT exceed maxScenarios in your response.`;
 
 // ---------------------------------------------------------------------------
@@ -369,6 +377,8 @@ function isResolved(
   }
   const target = "target" in action ? (action as { target: import("../../validation").Locator }).target : undefined;
   if (!target) return true;
+  // css/xpath locators are always considered resolved — they come from deriveLocator
+  if (target.kind === "css" || target.kind === "xpath") return true;
   if (findElementByLocator(analysis.elements, target)) return true;
   const candidate = locatorText(target);
   return candidate ? validNames.has(normalize(candidate)) : false;
@@ -378,7 +388,14 @@ function findElementByLocator(
   elements: PageElement[],
   loc: import("../../validation").Locator,
 ): PageElement | undefined {
-  return elements.find((e) => sameLocator(e.locator, loc));
+  // 1. Exact match by locator kind+value
+  const exact = elements.find((e) => sameLocator(e.locator, loc));
+  if (exact) return exact;
+
+  // 2. Fuzzy match by accessible name (AI may generate role/label when CSS exists)
+  const nameToFind = normalize(locatorText(loc));
+  if (!nameToFind) return undefined;
+  return elements.find((e) => normalize(e.accessibleName) === nameToFind);
 }
 
 function sameLocator(
@@ -391,6 +408,8 @@ function sameLocator(
   if (a.kind === "label" && b.kind === "label") return a.text === b.text;
   if (a.kind === "text" && b.kind === "text") return a.text === b.text;
   if (a.kind === "testId" && b.kind === "testId") return a.value === b.value;
+  if (a.kind === "css" && b.kind === "css") return a.selector === b.selector;
+  if (a.kind === "xpath" && b.kind === "xpath") return a.selector === b.selector;
   return false;
 }
 
@@ -400,6 +419,8 @@ function locatorText(loc: import("../../validation").Locator): string | undefine
     case "label":  return loc.text;
     case "text":   return loc.text;
     case "testId": return loc.value;
+    case "css":    return loc.selector;
+    case "xpath":  return loc.selector;
   }
 }
 

@@ -171,17 +171,37 @@ export async function analyzePage(opts: AnalyzeOptions): Promise<PageAnalysis> {
 }
 
 function deriveLocator(r: RawElement): Locator {
-  // testId is strongest stable
+  // 1. data-testid — most stable
   if (r.testId) return { kind: "testId", value: r.testId };
-  // role+name
+
+  // 2. CSS by id — unique and stable
+  if (r.attrId) return { kind: "css", selector: `${r.tag}#${cssEscape(r.attrId)}` };
+
+  // 3. CSS by name attribute — reliable for form fields
+  if (r.attrName && (r.tag === "input" || r.tag === "select" || r.tag === "textarea"))
+    return { kind: "css", selector: `${r.tag}[name="${r.attrName}"]` };
+
+  // 4. CSS by input type (when unique enough: email, password, submit, search)
+  const UNIQUE_TYPES = new Set(["email", "password", "submit", "search", "file", "checkbox", "radio"]);
+  if (r.tag === "input" && r.type && UNIQUE_TYPES.has(r.type))
+    return { kind: "css", selector: `input[type="${r.type}"]` };
+
+  // 5. Role + accessible name (semantic fallback)
   const role = inferRole(r);
-  if (role && r.name) {
-    return { kind: "role", role, name: r.name };
-  }
+  if (role && r.name) return { kind: "role", role, name: r.name };
+
+  // 6. Label text
   if (r.label) return { kind: "label", text: r.label };
+
+  // 7. Visible text
   if (r.text) return { kind: "text", text: r.text };
+
   if (role) return { kind: "role", role };
   return { kind: "text", text: r.tag };
+}
+
+function cssEscape(s: string): string {
+  return s.replace(/([!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
 }
 
 function inferRole(r: RawElement): import("../validation").AriaRole | undefined {

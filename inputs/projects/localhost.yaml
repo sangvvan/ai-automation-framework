@@ -20,8 +20,8 @@ roles:
     authRecipe: inputs/auth/localhost.yaml
 
 crawl:
-  maxPages: 5                       # increase when Ollama is stable; each page = ~13 AI calls
-  maxDepth: 2
+  maxPages: 2                       # increase when Ollama is stable; each page = ~13 AI calls
+  maxDepth: 1
   maxConcurrency: 1                 # single thread — avoids RAM spikes with local model
   perHostQps: 1
   includeSubdomains: false

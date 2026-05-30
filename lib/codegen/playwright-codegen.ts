@@ -210,6 +210,8 @@ function locatorKey(loc: Locator): string {
     case "label":  return `label::${loc.text}`;
     case "text":   return `text::${loc.text}`;
     case "testId": return `testId::${loc.value}`;
+    case "css":    return `css::${loc.selector}`;
+    case "xpath":  return `xpath::${loc.selector}`;
     default:       return JSON.stringify(loc);
   }
 }
@@ -220,6 +222,8 @@ function locatorToCamelName(loc: Locator): string {
     case "label":  return toCamel(loc.text);
     case "text":   return toCamel(loc.text);
     case "testId": return toCamel(loc.value);
+    case "css":    return toCamel(loc.selector.replace(/[^\w]/g, " "));
+    case "xpath":  return toCamel(loc.selector.replace(/[^\w]/g, " "));
     default:       return "element";
   }
 }
@@ -465,6 +469,8 @@ function locatorToPlaywrightExpr(loc: Locator, ctx: string): string {
     case "label":  return `${ctx}.getByLabel('${escStr(loc.text)}')`;
     case "text":   return `${ctx}.getByText('${escStr(loc.text)}')`;
     case "testId": return `${ctx}.getByTestId('${escStr(loc.value)}')`;
+    case "css":    return `${ctx}.locator('${escStr(loc.selector)}')`;
+    case "xpath":  return `${ctx}.locator('xpath=${escStr(loc.selector)}')`;
     default:       return `${ctx}.locator('[data-unknown]')`;
   }
 }
