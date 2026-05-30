@@ -38,7 +38,16 @@ const ENGINES = { chromium, firefox, webkit } as const;
 export async function launchBrowser(opts: LaunchOptions = {}): Promise<BrowserSession> {
   const browserName: BrowserName = opts.browser ?? (process.env.PLAYWRIGHT_BROWSER as BrowserName) ?? "chromium";
   const engine = ENGINES[browserName];
-  const browser = await engine.launch({ headless: opts.headless ?? true });
+  // Allow pointing Chromium at a system/custom binary (e.g. a distro Chrome,
+  // or a cached Playwright build) via PLAYWRIGHT_CHROMIUM_EXECUTABLE. Useful
+  // in locked-down CI where the matching Playwright browser revision cannot
+  // be downloaded. Only honoured for the chromium engine.
+  const chromiumExecutable =
+    browserName === "chromium" ? process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE : undefined;
+  const browser = await engine.launch({
+    headless: opts.headless ?? true,
+    ...(chromiumExecutable ? { executablePath: chromiumExecutable } : {}),
+  });
   const contextOptions: Parameters<Browser["newContext"]>[0] = {
     viewport: opts.viewport ?? { width: 1280, height: 800 },
     storageState: opts.storageState,

@@ -224,11 +224,42 @@ const RunSuiteOnlySchema = z.object({
   command: z.literal("run-suite"),
   project: z.string().min(1),
   role:    z.string().min(1),
+  browsers: z.string().max(120).default("chromium"),
+  a11y:     z.boolean().default(false),
+  vitals:   z.boolean().default(false),
+  securityHeaders: z.boolean().default(false),
+});
+
+// ── New tester-focused commands ───────────────────────────────────────────────
+const RegressionSchema = z.object({
+  command:  z.literal("regression"),
+  feature:  z.string().max(80).optional(),
+  browsers: z.string().max(120).default("chromium"),
+  a11y:     z.boolean().default(false),
+  vitals:   z.boolean().default(false),
+  securityHeaders: z.boolean().default(false),
+});
+
+const IstqbTemplateSchema = z.object({
+  command:   z.literal("istqb-template"),
+  project:   z.string().min(1).max(80),
+  pageUrl:   z.string().optional(),
+  technique: z.string().min(1).max(60).default("equivalence-partition"),
+  testLevel: z.string().min(1).max(40).default("system"),
+  testType:  z.string().min(1).max(40).default("functional"),
+  format:    z.enum(["yaml", "markdown", "both"]).default("both"),
+});
+
+const BaselinesSchema = z.object({
+  command: z.literal("baselines"),
+  runId:   z.string().min(1),
+  shot:    z.string().max(120).optional(),
 });
 
 const RunSchema = z.discriminatedUnion("command", [
   WorkflowSchema, QuickSchema, AnalyzeSchema, AuthDetectSchema, RerunSchema,
   CrawlOnlySchema, GenerateCasesSchema, GenScriptsSchema, RunSuiteOnlySchema,
+  RegressionSchema, IstqbTemplateSchema, BaselinesSchema,
 ]);
 
 // ─── Project helpers ──────────────────────────────────────────────────────────
@@ -395,8 +426,14 @@ app.post("/run", async (req: Request, res: Response) => {
     }
     if (!sitemapPath) sitemapPath = await latestSitemapInDir(path.join(rootDir, "reports", "sitemaps"));
     if (!sitemapPath) { res.status(400).json({ error: "No sitemaps found. Run Crawl first." }); return; }
+    // Pin --output-dir to the slug-based directory so cases land exactly where
+    // Gen Scripts / Run Suite later read them. Without this, `generate` derives
+    // its own dir from safePathSegment(project name), which diverges from the
+    // file slug for names containing dots/underscores (e.g. "v1.2" → "v1.2"
+    // vs slug "v1-2") and breaks the chained steps.
+    const genOutputDir = path.join(rootDir, info.outputDir, input.project, input.role);
     argv = ["vite-node", script, "generate", "--site-map", sitemapPath,
-      "--project", info.name, "--role", input.role];
+      "--project", info.name, "--role", input.role, "--output-dir", genOutputDir];
     const ss = path.join(rootDir, "reports", "auth", input.project, `${input.role}.storage-state.json`);
     if (existsSync(ss)) argv.push("--storage-state", ss);
     env.AI_TEST_DEFAULT_PROVIDER = input.provider;
@@ -408,13 +445,16 @@ app.post("/run", async (req: Request, res: Response) => {
     if (!existsSync(manifestPath)) { res.status(400).json({ error: "No test cases found. Run Generate Cases first." }); return; }
     argv = ["vite-node", script, "generate-scripts", "--manifest", manifestPath, `--language=${input.language}`];
 
-  } else {
-    // run-suite
+  } else if (input.command === "run-suite") {
     const info = await readProjectInfo(input.project, input.role);
     if (!info) { res.status(400).json({ error: `Project not found: ${input.project}` }); return; }
     const casesDir = path.join(rootDir, info.outputDir, input.project, input.role);
     if (!existsSync(casesDir)) { res.status(400).json({ error: "No test cases found. Run Generate Cases first." }); return; }
     argv = ["vite-node", script, "run-suite", "--cases-dir", casesDir, "--project", info.name, "--role", input.role];
+    if (input.browsers) argv.push("--browsers", input.browsers);
+    if (input.a11y) argv.push("--a11y");
+    if (input.vitals) argv.push("--vitals");
+    if (input.securityHeaders) argv.push("--security-headers");
     const ss = path.join(rootDir, "reports", "auth", input.project, `${input.role}.storage-state.json`);
     if (existsSync(ss)) argv.push("--storage-state", ss);
     const manifestPath = path.join(casesDir, "manifest.json");
@@ -423,6 +463,32 @@ app.post("/run", async (req: Request, res: Response) => {
       const smAbs = path.resolve(rootDir, mf.siteMapPath);
       if (existsSync(smAbs)) argv.push("--site-map", smAbs);
     }
+
+  } else if (input.command === "regression") {
+    // Re-run the approved/promoted regression corpus under tests/regression.
+    argv = ["vite-node", script, "regression", "--no-pr-comment"];
+    if (input.feature) argv.push("--feature", input.feature);
+    if (input.browsers) argv.push("--browsers", input.browsers);
+    if (input.a11y) argv.push("--a11y");
+    if (input.vitals) argv.push("--vitals");
+    if (input.securityHeaders) argv.push("--security-headers");
+
+  } else if (input.command === "istqb-template") {
+    // Scaffold an ISTQB-CTFL v4.0 test-case template for manual authoring.
+    const outDir = path.join(rootDir, "docs", "test-cases");
+    argv = ["vite-node", script, "istqb-template",
+      "--project", input.project,
+      "--technique", input.technique,
+      "--test-level", input.testLevel,
+      "--test-type", input.testType,
+      "--format", input.format,
+      "--output-dir", outDir];
+    if (input.pageUrl) argv.push("--page-url", input.pageUrl);
+
+  } else {
+    // baselines accept — promote a run's screenshots into the visual baselines.
+    argv = ["vite-node", script, "baselines", "accept", "--run-id", input.runId];
+    if (input.shot) argv.push("--shot", input.shot);
   }
 
   const child = spawnCli(argv, env);
@@ -736,6 +802,15 @@ const PAGE_HTML = /* html */`<!doctype html>
       <button type="button" class="cmd-btn" data-cmd="run-suite" onclick="setCmd('run-suite')">
         <span class="icon">▶</span>Run Suite
       </button>
+      <button type="button" class="cmd-btn" data-cmd="regression" onclick="setCmd('regression')">
+        <span class="icon">🛡</span>Regression
+      </button>
+      <button type="button" class="cmd-btn" data-cmd="istqb-template" onclick="setCmd('istqb-template')">
+        <span class="icon">📄</span>ISTQB TC
+      </button>
+      <button type="button" class="cmd-btn" data-cmd="baselines" onclick="setCmd('baselines')">
+        <span class="icon">🖼</span>Baselines
+      </button>
     </div>
 
     <div class="cmd-desc" id="cmd-desc"></div>
@@ -912,7 +987,114 @@ const PAGE_HTML = /* html */`<!doctype html>
             <select name="runSuiteRole" id="run-suite-role"><option value="">— select —</option></select>
           </div>
         </div>
+        <div class="field">
+          <label>Browsers</label>
+          <select name="runSuiteBrowsers">
+            <option value="chromium">chromium</option>
+            <option value="chromium,firefox">chromium, firefox</option>
+            <option value="chromium,firefox,webkit">chromium, firefox, webkit</option>
+          </select>
+        </div>
+        <label class="check-row"><input type="checkbox" name="runSuiteA11y"/> Accessibility (axe-core)</label>
+        <label class="check-row"><input type="checkbox" name="runSuiteVitals"/> Web Vitals</label>
+        <label class="check-row"><input type="checkbox" name="runSuiteSecHeaders"/> Security headers</label>
         <div class="hint">Runs YAML keyword test suite → HTML/JUnit report. Auth state reused if available.</div>
+      </div>
+
+      <!-- ═══ REGRESSION ════════════════════════════════════════════════════ -->
+      <div class="cmd-section" id="sec-regression">
+        <div class="sec">Regression Corpus</div>
+        <div class="field">
+          <label>Feature (optional)</label>
+          <input name="regFeature" type="text" placeholder="e.g. auth — leave blank for all"/>
+          <div class="hint">Runs <code>tests/regression/&lt;feature&gt;</code> (or the whole corpus). Promote scenarios via the Review UI first.</div>
+        </div>
+        <div class="field">
+          <label>Browsers</label>
+          <select name="regBrowsers">
+            <option value="chromium">chromium</option>
+            <option value="chromium,firefox">chromium, firefox</option>
+            <option value="chromium,firefox,webkit">chromium, firefox, webkit</option>
+          </select>
+        </div>
+        <label class="check-row"><input type="checkbox" name="regA11y"/> Accessibility (axe-core)</label>
+        <label class="check-row"><input type="checkbox" name="regVitals"/> Web Vitals</label>
+        <label class="check-row"><input type="checkbox" name="regSecHeaders"/> Security headers</label>
+      </div>
+
+      <!-- ═══ ISTQB TEMPLATE ════════════════════════════════════════════════ -->
+      <div class="cmd-section" id="sec-istqb-template">
+        <div class="sec">ISTQB Test Case Template</div>
+        <div class="field">
+          <label>Project / TC-ID prefix *</label>
+          <input name="istqbProject" type="text" placeholder="My App"/>
+        </div>
+        <div class="field">
+          <label>Page URL (optional)</label>
+          <input name="istqbPageUrl" type="url" placeholder="https://myapp.com/login"/>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Technique</label>
+            <select name="istqbTechnique">
+              <option value="equivalence-partition">Equivalence Partitioning</option>
+              <option value="boundary-value">Boundary Value Analysis</option>
+              <option value="decision-table">Decision Table</option>
+              <option value="state-transition">State Transition</option>
+              <option value="use-case">Use Case</option>
+              <option value="error-guessing">Error Guessing</option>
+              <option value="exploratory">Exploratory</option>
+              <option value="checklist-based">Checklist Based</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Test Type</label>
+            <select name="istqbTestType">
+              <option value="functional">functional</option>
+              <option value="non-functional">non-functional</option>
+              <option value="structural">structural</option>
+              <option value="regression">regression</option>
+              <option value="confirmation">confirmation</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Test Level</label>
+            <select name="istqbTestLevel">
+              <option value="system">system</option>
+              <option value="unit">unit</option>
+              <option value="component-integration">component-integration</option>
+              <option value="system-integration">system-integration</option>
+              <option value="acceptance">acceptance</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Format</label>
+            <select name="istqbFormat">
+              <option value="both">YAML + Markdown</option>
+              <option value="yaml">YAML only</option>
+              <option value="markdown">Markdown only</option>
+            </select>
+          </div>
+        </div>
+        <div class="hint">Writes a fillable template under <code>docs/test-cases/</code>. The YAML is executable via Run Suite once completed.</div>
+      </div>
+
+      <!-- ═══ BASELINES ═════════════════════════════════════════════════════ -->
+      <div class="cmd-section" id="sec-baselines">
+        <div class="sec">Visual Baselines</div>
+        <div class="field">
+          <label>Source Run ID *</label>
+          <select name="baselineRunId" id="baselines-select">
+            <option value="">— select a previous run —</option>
+          </select>
+          <div class="hint">Promotes that run's screenshots into the canonical baseline set.</div>
+        </div>
+        <div class="field">
+          <label>Screenshot name filter (optional)</label>
+          <input name="baselineShot" type="text" placeholder="e.g. dashboard — blank = all"/>
+        </div>
       </div>
 
       <!-- ═══ Provider (workflow, quick, rerun) ════════════════════════════ -->
@@ -980,6 +1162,9 @@ const PAGE_HTML = /* html */`<!doctype html>
     'generate-cases':  { label:'Generate Cases',  desc:'AI generates/updates test cases from latest sitemap. Existing blocks preserved unless scenario hash changes.', provider:true },
     'gen-scripts':     { label:'Generate Scripts',desc:'Generate Python pytest or TypeScript Playwright scripts from existing test cases. Custom zones never overwritten.', provider:false },
     'run-suite':       { label:'Run Suite',       desc:'Run YAML keyword test suite for selected project/role → HTML + JUnit report.', provider:false },
+    regression:        { label:'Run Regression',  desc:'Re-run the approved/promoted regression corpus (tests/regression) → HTML + JUnit report.', provider:false },
+    'istqb-template':  { label:'Make Template',   desc:'Scaffold an ISTQB-CTFL v4.0 test-case template (YAML + Markdown) for manual authoring.', provider:false },
+    baselines:         { label:'Accept Baselines',desc:'Promote a run\\'s screenshots into the canonical visual baseline set.', provider:false },
   };
 
   let currentCmd = 'workflow';
@@ -1054,8 +1239,9 @@ const PAGE_HTML = /* html */`<!doctype html>
     // Button label
     btnLabel.textContent = CMD_META[cmd]?.label ?? 'Run';
 
-    // Load run IDs for rerun
+    // Load run IDs for rerun / baselines
     if (cmd === 'rerun') loadRunIds();
+    if (cmd === 'baselines') loadRunIds('baselines-select');
     // Load project/role dropdowns for step commands
     if (['crawl-only','generate-cases','gen-scripts','run-suite'].includes(cmd)) loadProjects(cmd);
   }
@@ -1100,9 +1286,10 @@ const PAGE_HTML = /* html */`<!doctype html>
     }
   }
 
-  async function loadRunIds() {
+  async function loadRunIds(selectId) {
     const runs = await fetch('/runs').then(r => r.json()).catch(() => []);
-    const sel = document.getElementById('rerun-select');
+    const sel = document.getElementById(selectId || 'rerun-select');
+    if (!sel) return;
     const prev = sel.value;
     sel.innerHTML = '<option value="">— select a previous run —</option>';
     runs.forEach(r => {
@@ -1175,8 +1362,34 @@ const PAGE_HTML = /* html */`<!doctype html>
       });
     } else if (cmd === 'run-suite') {
       Object.assign(body, {
-        project: form.runSuiteProject.value,
-        role:    form.runSuiteRole.value,
+        project:  form.runSuiteProject.value,
+        role:     form.runSuiteRole.value,
+        browsers: form.runSuiteBrowsers.value,
+        a11y:     form.runSuiteA11y.checked,
+        vitals:   form.runSuiteVitals.checked,
+        securityHeaders: form.runSuiteSecHeaders.checked,
+      });
+    } else if (cmd === 'regression') {
+      Object.assign(body, {
+        feature:  form.regFeature.value.trim() || undefined,
+        browsers: form.regBrowsers.value,
+        a11y:     form.regA11y.checked,
+        vitals:   form.regVitals.checked,
+        securityHeaders: form.regSecHeaders.checked,
+      });
+    } else if (cmd === 'istqb-template') {
+      Object.assign(body, {
+        project:   form.istqbProject.value.trim(),
+        pageUrl:   form.istqbPageUrl.value.trim() || undefined,
+        technique: form.istqbTechnique.value,
+        testLevel: form.istqbTestLevel.value,
+        testType:  form.istqbTestType.value,
+        format:    form.istqbFormat.value,
+      });
+    } else if (cmd === 'baselines') {
+      Object.assign(body, {
+        runId: form.baselineRunId.value,
+        shot:  form.baselineShot.value.trim() || undefined,
       });
     }
 
@@ -1226,7 +1439,7 @@ const PAGE_HTML = /* html */`<!doctype html>
         const code = parseInt(line.match(/exitCode=(-?\\d+)/)?.[1] ?? '-1', 10);
         setRunning(false);
         dot.className = 'dot ' + (code === 0 ? 'done' : 'error');
-        if (code === 0 && ['workflow','quick','rerun','run-suite'].includes(cmd))
+        if (code === 0 && ['workflow','quick','rerun','run-suite','regression'].includes(cmd))
           showReport(runId);
         loadReports();
         es.close(); return;
