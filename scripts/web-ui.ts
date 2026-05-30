@@ -1,12 +1,12 @@
 /**
- * Web UI — multi-command wrapper for ai-automation-framework CLI.
+ * Web UI — ai-automation-framework interactive runner.
  *
- * Supported commands (via dropdown):
- *   workflow    → init project YAML + auth YAML → run full pipeline
- *   quick       → one-shot URL → run full pipeline
- *   analyze     → analyze a single page
- *   auth detect → auto-detect login form, generate auth recipe
- *   rerun       → re-run failed tests from a previous run ID
+ * Supported commands:
+ *   workflow        → init project YAML + auth YAML → full pipeline
+ *   generate-cases  → AI generate test cases from latest sitemap
+ *   gen-scripts     → generate Python/TypeScript automation scripts
+ *   run-suite       → run YAML test suite → HTML/JUnit report
+ *   regression      → re-run approved regression corpus
  *
  * Usage:
  *   npm run web-ui
@@ -98,8 +98,6 @@ async function createProjectFiles(opts: {
   }
   let authFile: string | undefined;
 
-  // Use form values; if blank, fall back to env vars already present in .env
-  // so users don't have to re-enter credentials they've already set up.
   const effectiveUsername = opts.username || process.env.SITE_USERNAME || "";
   const effectivePassword = opts.password || process.env.SITE_PASSWORD || "";
   const credentialSource = opts.username
@@ -175,37 +173,6 @@ const WorkflowSchema = z.object({
   provider:      providerEnum,
 });
 
-const QuickSchema = z.object({
-  command:  z.literal("quick"),
-  url:      z.string().url(),
-  username: z.string().max(256).optional(),
-  password: z.string().max(1024).optional(),
-  provider: providerEnum,
-});
-
-const AnalyzeSchema = z.object({
-  command: z.literal("analyze"),
-  url:     z.string().url(),
-});
-
-const AuthDetectSchema = z.object({
-  command:  z.literal("auth-detect"),
-  loginUrl: z.string().url(),
-});
-
-const RerunSchema = z.object({
-  command:    z.literal("rerun"),
-  fromRunId:  z.string().min(1),
-  failedOnly: z.boolean().default(true),
-  provider:   providerEnum,
-});
-
-const CrawlOnlySchema = z.object({
-  command: z.literal("crawl-only"),
-  project: z.string().min(1),
-  role:    z.string().min(1),
-});
-
 const GenerateCasesSchema = z.object({
   command:  z.literal("generate-cases"),
   project:  z.string().min(1),
@@ -220,46 +187,27 @@ const GenScriptsSchema = z.object({
   language: z.enum(["python", "typescript"]).default("python"),
 });
 
-const RunSuiteOnlySchema = z.object({
-  command: z.literal("run-suite"),
-  project: z.string().min(1),
-  role:    z.string().min(1),
-  browsers: z.string().max(120).default("chromium"),
-  a11y:     z.boolean().default(false),
-  vitals:   z.boolean().default(false),
+const RunSuiteSchema = z.object({
+  command:         z.literal("run-suite"),
+  project:         z.string().min(1),
+  role:            z.string().min(1),
+  browsers:        z.string().max(120).default("chromium"),
+  a11y:            z.boolean().default(false),
+  vitals:          z.boolean().default(false),
   securityHeaders: z.boolean().default(false),
 });
 
-// ── New tester-focused commands ───────────────────────────────────────────────
 const RegressionSchema = z.object({
-  command:  z.literal("regression"),
-  feature:  z.string().max(80).optional(),
-  browsers: z.string().max(120).default("chromium"),
-  a11y:     z.boolean().default(false),
-  vitals:   z.boolean().default(false),
+  command:         z.literal("regression"),
+  feature:         z.string().max(80).optional(),
+  browsers:        z.string().max(120).default("chromium"),
+  a11y:            z.boolean().default(false),
+  vitals:          z.boolean().default(false),
   securityHeaders: z.boolean().default(false),
-});
-
-const IstqbTemplateSchema = z.object({
-  command:   z.literal("istqb-template"),
-  project:   z.string().min(1).max(80),
-  pageUrl:   z.string().optional(),
-  technique: z.string().min(1).max(60).default("equivalence-partition"),
-  testLevel: z.string().min(1).max(40).default("system"),
-  testType:  z.string().min(1).max(40).default("functional"),
-  format:    z.enum(["yaml", "markdown", "both"]).default("both"),
-});
-
-const BaselinesSchema = z.object({
-  command: z.literal("baselines"),
-  runId:   z.string().min(1),
-  shot:    z.string().max(120).optional(),
 });
 
 const RunSchema = z.discriminatedUnion("command", [
-  WorkflowSchema, QuickSchema, AnalyzeSchema, AuthDetectSchema, RerunSchema,
-  CrawlOnlySchema, GenerateCasesSchema, GenScriptsSchema, RunSuiteOnlySchema,
-  RegressionSchema, IstqbTemplateSchema, BaselinesSchema,
+  WorkflowSchema, GenerateCasesSchema, GenScriptsSchema, RunSuiteSchema, RegressionSchema,
 ]);
 
 // ─── Project helpers ──────────────────────────────────────────────────────────
@@ -327,19 +275,6 @@ app.use(express.json());
 
 app.get("/", (_req: Request, res: Response) => res.send(PAGE_HTML));
 
-// ── GET /runs — list previous run IDs for rerun dropdown ─────────────────────
-app.get("/runs", async (_req: Request, res: Response) => {
-  const jsonDir = path.join(rootDir, "reports", "json");
-  const result: { runId: string }[] = [];
-  try {
-    const files = await readdir(jsonDir);
-    for (const f of files)
-      if (f.endsWith(".json")) result.push({ runId: f.replace(/\.json$/, "") });
-  } catch { /* not yet */ }
-  result.sort((a, b) => b.runId.localeCompare(a.runId));
-  res.json(result);
-});
-
 // ── POST /run ─────────────────────────────────────────────────────────────────
 app.post("/run", async (req: Request, res: Response) => {
   const parsed = RunSchema.safeParse(req.body);
@@ -361,7 +296,6 @@ app.post("/run", async (req: Request, res: Response) => {
   let argv: string[];
   let initNote: string | undefined;
 
-  // ── Build argv per command ────────────────────────────────────────────────
   if (input.command === "workflow") {
     let projectFile: string, authFile: string | undefined, credentialSource: string | undefined;
     try {
@@ -379,40 +313,9 @@ app.post("/run", async (req: Request, res: Response) => {
     }
     argv = ["vite-node", script, "workflow", "--input", path.resolve(rootDir, projectFile), "--skip-preflight"];
     env.AI_TEST_DEFAULT_PROVIDER = input.provider;
-    // Always propagate credentials to child env so ${SITE_USERNAME}/${SITE_PASSWORD}
-    // in the auth recipe are resolved — use form values first, then fall back to .env values.
     env.SITE_USERNAME = input.username || process.env.SITE_USERNAME || "";
     env.SITE_PASSWORD = input.password || process.env.SITE_PASSWORD || "";
     initNote = JSON.stringify({ projectFile, authFile, credentialSource });
-
-  } else if (input.command === "quick") {
-    argv = ["vite-node", script, "quick", "--url", input.url, "--skip-preflight"];
-    if (input.username) argv.push("--username", input.username);
-    env.AI_TEST_DEFAULT_PROVIDER = input.provider;
-    if (input.username) env.SITE_USERNAME = input.username;
-    if (input.password) env.SITE_PASSWORD = input.password;
-
-  } else if (input.command === "analyze") {
-    argv = ["vite-node", script, "analyze", "--url", input.url];
-
-  } else if (input.command === "auth-detect") {
-    argv = ["vite-node", script, "auth", "detect", "--url", input.loginUrl];
-
-  } else if (input.command === "rerun") {
-    argv = ["vite-node", script, "rerun", "--from", input.fromRunId];
-    if (input.failedOnly) argv.push("--failed-only");
-    env.AI_TEST_DEFAULT_PROVIDER = input.provider;
-
-  } else if (input.command === "crawl-only") {
-    const info = await readProjectInfo(input.project, input.role);
-    if (!info) { res.status(400).json({ error: `Project not found: ${input.project}` }); return; }
-    argv = ["vite-node", script, "crawl", "--url", info.baseUrl,
-      "--max-pages", String(info.crawl.maxPages), "--max-depth", String(info.crawl.maxDepth),
-      "--max-concurrency", String(info.crawl.maxConcurrency), "--per-host-qps", String(info.crawl.perHostQps),
-    ];
-    const ss = path.join(rootDir, "reports", "auth", input.project, `${input.role}.storage-state.json`);
-    if (existsSync(ss)) argv.push("--storage-state", ss);
-    else if (info.role.authRecipe) argv.push("--auth-recipe", path.resolve(rootDir, info.role.authRecipe));
 
   } else if (input.command === "generate-cases") {
     const info = await readProjectInfo(input.project, input.role);
@@ -425,12 +328,9 @@ app.post("/run", async (req: Request, res: Response) => {
       if (existsSync(abs)) sitemapPath = abs;
     }
     if (!sitemapPath) sitemapPath = await latestSitemapInDir(path.join(rootDir, "reports", "sitemaps"));
-    if (!sitemapPath) { res.status(400).json({ error: "No sitemaps found. Run Crawl first." }); return; }
+    if (!sitemapPath) { res.status(400).json({ error: "No sitemaps found. Run Workflow first to crawl the site." }); return; }
     // Pin --output-dir to the slug-based directory so cases land exactly where
-    // Gen Scripts / Run Suite later read them. Without this, `generate` derives
-    // its own dir from safePathSegment(project name), which diverges from the
-    // file slug for names containing dots/underscores (e.g. "v1.2" → "v1.2"
-    // vs slug "v1-2") and breaks the chained steps.
+    // Gen Scripts / Run Suite later read them.
     const genOutputDir = path.join(rootDir, info.outputDir, input.project, input.role);
     argv = ["vite-node", script, "generate", "--site-map", sitemapPath,
       "--project", info.name, "--role", input.role, "--output-dir", genOutputDir];
@@ -464,31 +364,14 @@ app.post("/run", async (req: Request, res: Response) => {
       if (existsSync(smAbs)) argv.push("--site-map", smAbs);
     }
 
-  } else if (input.command === "regression") {
-    // Re-run the approved/promoted regression corpus under tests/regression.
+  } else {
+    // regression
     argv = ["vite-node", script, "regression", "--no-pr-comment"];
     if (input.feature) argv.push("--feature", input.feature);
     if (input.browsers) argv.push("--browsers", input.browsers);
     if (input.a11y) argv.push("--a11y");
     if (input.vitals) argv.push("--vitals");
     if (input.securityHeaders) argv.push("--security-headers");
-
-  } else if (input.command === "istqb-template") {
-    // Scaffold an ISTQB-CTFL v4.0 test-case template for manual authoring.
-    const outDir = path.join(rootDir, "docs", "test-cases");
-    argv = ["vite-node", script, "istqb-template",
-      "--project", input.project,
-      "--technique", input.technique,
-      "--test-level", input.testLevel,
-      "--test-type", input.testType,
-      "--format", input.format,
-      "--output-dir", outDir];
-    if (input.pageUrl) argv.push("--page-url", input.pageUrl);
-
-  } else {
-    // baselines accept — promote a run's screenshots into the visual baselines.
-    argv = ["vite-node", script, "baselines", "accept", "--run-id", input.runId];
-    if (input.shot) argv.push("--shot", input.shot);
   }
 
   const child = spawnCli(argv, env);
@@ -526,7 +409,7 @@ app.get("/stream/:runId", (req: Request<{ runId: string }>, res: Response) => {
   req.on("close", () => run.subscribers.delete(res));
 });
 
-// ── GET /ping?url=<url> — reachability check used by the UI pre-flight banner ─
+// ── GET /ping?url=<url> ───────────────────────────────────────────────────────
 app.get("/ping", async (req: Request, res: Response) => {
   const target = String(req.query.url ?? "");
   if (!target.startsWith("http")) { res.json({ ok: false, reason: "invalid url" }); return; }
@@ -638,9 +521,9 @@ const PAGE_HTML = /* html */`<!doctype html>
     .panel-title{font-size:.95rem;font-weight:700;margin-bottom:16px;
       padding-bottom:12px;border-bottom:1px solid var(--border)}
 
-    /* Command selector */
+    /* Command selector — 5 equal columns */
     .cmd-selector{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:18px}
-    .cmd-btn{padding:7px 4px;border:1px solid var(--border);border-radius:7px;
+    .cmd-btn{padding:8px 4px;border:1px solid var(--border);border-radius:7px;
       background:var(--bg-card);color:var(--color-muted);font-family:var(--font);
       font-size:.72rem;font-weight:600;cursor:pointer;text-align:center;
       transition:all .15s;line-height:1.3}
@@ -648,7 +531,7 @@ const PAGE_HTML = /* html */`<!doctype html>
       background:var(--color-info-bg)}
     .cmd-btn.active{border-color:var(--color-info);background:var(--color-info-bg);
       color:var(--color-info-text)}
-    .cmd-btn .icon{font-size:1.1rem;display:block;margin-bottom:3px}
+    .cmd-btn .icon{font-size:1.2rem;display:block;margin-bottom:4px}
 
     /* Command description badge */
     .cmd-desc{font-size:.78rem;color:var(--color-muted);background:var(--color-sk-bg);
@@ -773,25 +656,10 @@ const PAGE_HTML = /* html */`<!doctype html>
   <div class="panel">
     <div class="panel-title">Configure</div>
 
-    <!-- Command selector -->
+    <!-- 5 command buttons -->
     <div class="cmd-selector">
       <button type="button" class="cmd-btn active" data-cmd="workflow" onclick="setCmd('workflow')">
         <span class="icon">🔄</span>Workflow
-      </button>
-      <button type="button" class="cmd-btn" data-cmd="quick" onclick="setCmd('quick')">
-        <span class="icon">⚡</span>Quick
-      </button>
-      <button type="button" class="cmd-btn" data-cmd="analyze" onclick="setCmd('analyze')">
-        <span class="icon">🔍</span>Analyze
-      </button>
-      <button type="button" class="cmd-btn" data-cmd="auth-detect" onclick="setCmd('auth-detect')">
-        <span class="icon">🔐</span>Auth Detect
-      </button>
-      <button type="button" class="cmd-btn" data-cmd="rerun" onclick="setCmd('rerun')">
-        <span class="icon">🔁</span>Rerun
-      </button>
-      <button type="button" class="cmd-btn" data-cmd="crawl-only" onclick="setCmd('crawl-only')">
-        <span class="icon">🕷</span>Crawl
       </button>
       <button type="button" class="cmd-btn" data-cmd="generate-cases" onclick="setCmd('generate-cases')">
         <span class="icon">🤖</span>Gen Cases
@@ -804,12 +672,6 @@ const PAGE_HTML = /* html */`<!doctype html>
       </button>
       <button type="button" class="cmd-btn" data-cmd="regression" onclick="setCmd('regression')">
         <span class="icon">🛡</span>Regression
-      </button>
-      <button type="button" class="cmd-btn" data-cmd="istqb-template" onclick="setCmd('istqb-template')">
-        <span class="icon">📄</span>ISTQB TC
-      </button>
-      <button type="button" class="cmd-btn" data-cmd="baselines" onclick="setCmd('baselines')">
-        <span class="icon">🖼</span>Baselines
       </button>
     </div>
 
@@ -843,90 +705,17 @@ const PAGE_HTML = /* html */`<!doctype html>
         </div>
         <div class="field-row">
           <div class="field">
-            <label>Username / Email value</label>
+            <label>Username / Email</label>
             <input name="username" type="text" placeholder="admin@example.com" autocomplete="off"/>
           </div>
           <div class="field">
-            <label>Password value</label>
+            <label>Password</label>
             <input name="password" type="password" placeholder="••••••••" autocomplete="new-password"/>
           </div>
         </div>
         <input name="usernameLabel" type="hidden" value=""/>
         <input name="passwordLabel" type="hidden" value=""/>
         <input name="submitLabel" type="hidden" value=""/>
-      </div>
-
-      <!-- ═══ QUICK ══════════════════════════════════════════════════════════ -->
-      <div class="cmd-section" id="sec-quick">
-        <div class="sec">Target</div>
-        <div class="field">
-          <label>URL *</label>
-          <input name="quickUrl" type="url" placeholder="https://myapp.com"/>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>Username</label>
-            <input name="quickUsername" type="text" placeholder="optional" autocomplete="off"/>
-          </div>
-          <div class="field">
-            <label>Password</label>
-            <input name="quickPassword" type="password" placeholder="••••••••" autocomplete="new-password"/>
-          </div>
-        </div>
-      </div>
-
-      <!-- ═══ ANALYZE ════════════════════════════════════════════════════════ -->
-      <div class="cmd-section" id="sec-analyze">
-        <div class="sec">Target Page</div>
-        <div class="field">
-          <label>URL *</label>
-          <input name="analyzeUrl" type="url" placeholder="https://myapp.com/dashboard"/>
-          <div class="hint">Takes a screenshot + PageAnalysis JSON</div>
-        </div>
-      </div>
-
-      <!-- ═══ AUTH DETECT ════════════════════════════════════════════════════ -->
-      <div class="cmd-section" id="sec-auth-detect">
-        <div class="sec">Login Page</div>
-        <div class="field">
-          <label>Login URL *</label>
-          <input name="detectUrl" type="url" placeholder="https://myapp.com/login"/>
-          <div class="hint">Auto-detects form fields → creates <code>inputs/auth/*.yaml</code></div>
-        </div>
-      </div>
-
-      <!-- ═══ RERUN ══════════════════════════════════════════════════════════ -->
-      <div class="cmd-section" id="sec-rerun">
-        <div class="sec">Previous Run</div>
-        <div class="field">
-          <label>Source Run ID *</label>
-          <select name="fromRunId" id="rerun-select">
-            <option value="">— select a previous run —</option>
-          </select>
-          <div class="hint">Lists runs from <code>reports/json/</code></div>
-        </div>
-        <label class="check-row">
-          <input type="checkbox" name="failedOnly" checked/>
-          Failed scenarios only
-        </label>
-      </div>
-
-      <!-- ═══ CRAWL ONLY ════════════════════════════════════════════════════ -->
-      <div class="cmd-section" id="sec-crawl-only">
-        <div class="sec">Project</div>
-        <div class="field-row">
-          <div class="field">
-            <label>Project *</label>
-            <select name="crawlProject" id="crawl-only-project" onchange="onProjectChange('crawl-only')">
-              <option value="">— select —</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Role *</label>
-            <select name="crawlRole" id="crawl-only-role"><option value="">— select —</option></select>
-          </div>
-        </div>
-        <div class="hint">Re-crawls site using maxPages/maxDepth from project YAML. Auth state reused if available.</div>
       </div>
 
       <!-- ═══ GENERATE CASES ════════════════════════════════════════════════ -->
@@ -944,7 +733,7 @@ const PAGE_HTML = /* html */`<!doctype html>
             <select name="genCasesRole" id="generate-cases-role"><option value="">— select —</option></select>
           </div>
         </div>
-        <div class="hint">AI generates test cases from sitemap. Existing blocks preserved unless scenario hash changes.</div>
+        <div class="hint">AI generates test cases from the latest sitemap. Existing cases are preserved unless the scenario hash changes.</div>
       </div>
 
       <!-- ═══ GENERATE SCRIPTS ══════════════════════════════════════════════ -->
@@ -969,7 +758,7 @@ const PAGE_HTML = /* html */`<!doctype html>
             <option value="typescript">TypeScript — Playwright .spec.ts + POM</option>
           </select>
         </div>
-        <div class="hint">Requires existing test cases (manifest.json). Custom zones never overwritten.</div>
+        <div class="hint">Requires existing test cases (manifest.json). Custom zones are never overwritten.</div>
       </div>
 
       <!-- ═══ RUN SUITE ═════════════════════════════════════════════════════ -->
@@ -991,14 +780,14 @@ const PAGE_HTML = /* html */`<!doctype html>
           <label>Browsers</label>
           <select name="runSuiteBrowsers">
             <option value="chromium">chromium</option>
-            <option value="chromium,firefox">chromium, firefox</option>
-            <option value="chromium,firefox,webkit">chromium, firefox, webkit</option>
+            <option value="chromium,firefox">chromium + firefox</option>
+            <option value="chromium,firefox,webkit">chromium + firefox + webkit</option>
           </select>
         </div>
         <label class="check-row"><input type="checkbox" name="runSuiteA11y"/> Accessibility (axe-core)</label>
         <label class="check-row"><input type="checkbox" name="runSuiteVitals"/> Web Vitals</label>
         <label class="check-row"><input type="checkbox" name="runSuiteSecHeaders"/> Security headers</label>
-        <div class="hint">Runs YAML keyword test suite → HTML/JUnit report. Auth state reused if available.</div>
+        <div class="hint">Runs YAML test suite → HTML + JUnit report. Auth state is reused if available.</div>
       </div>
 
       <!-- ═══ REGRESSION ════════════════════════════════════════════════════ -->
@@ -1006,15 +795,15 @@ const PAGE_HTML = /* html */`<!doctype html>
         <div class="sec">Regression Corpus</div>
         <div class="field">
           <label>Feature (optional)</label>
-          <input name="regFeature" type="text" placeholder="e.g. auth — leave blank for all"/>
-          <div class="hint">Runs <code>tests/regression/&lt;feature&gt;</code> (or the whole corpus). Promote scenarios via the Review UI first.</div>
+          <input name="regFeature" type="text" placeholder="e.g. auth — leave blank to run all"/>
+          <div class="hint">Runs <code>tests/regression/&lt;feature&gt;</code> or the whole corpus. Promote scenarios via the Review UI first.</div>
         </div>
         <div class="field">
           <label>Browsers</label>
           <select name="regBrowsers">
             <option value="chromium">chromium</option>
-            <option value="chromium,firefox">chromium, firefox</option>
-            <option value="chromium,firefox,webkit">chromium, firefox, webkit</option>
+            <option value="chromium,firefox">chromium + firefox</option>
+            <option value="chromium,firefox,webkit">chromium + firefox + webkit</option>
           </select>
         </div>
         <label class="check-row"><input type="checkbox" name="regA11y"/> Accessibility (axe-core)</label>
@@ -1022,83 +811,8 @@ const PAGE_HTML = /* html */`<!doctype html>
         <label class="check-row"><input type="checkbox" name="regSecHeaders"/> Security headers</label>
       </div>
 
-      <!-- ═══ ISTQB TEMPLATE ════════════════════════════════════════════════ -->
-      <div class="cmd-section" id="sec-istqb-template">
-        <div class="sec">ISTQB Test Case Template</div>
-        <div class="field">
-          <label>Project / TC-ID prefix *</label>
-          <input name="istqbProject" type="text" placeholder="My App"/>
-        </div>
-        <div class="field">
-          <label>Page URL (optional)</label>
-          <input name="istqbPageUrl" type="url" placeholder="https://myapp.com/login"/>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>Technique</label>
-            <select name="istqbTechnique">
-              <option value="equivalence-partition">Equivalence Partitioning</option>
-              <option value="boundary-value">Boundary Value Analysis</option>
-              <option value="decision-table">Decision Table</option>
-              <option value="state-transition">State Transition</option>
-              <option value="use-case">Use Case</option>
-              <option value="error-guessing">Error Guessing</option>
-              <option value="exploratory">Exploratory</option>
-              <option value="checklist-based">Checklist Based</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Test Type</label>
-            <select name="istqbTestType">
-              <option value="functional">functional</option>
-              <option value="non-functional">non-functional</option>
-              <option value="structural">structural</option>
-              <option value="regression">regression</option>
-              <option value="confirmation">confirmation</option>
-            </select>
-          </div>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>Test Level</label>
-            <select name="istqbTestLevel">
-              <option value="system">system</option>
-              <option value="unit">unit</option>
-              <option value="component-integration">component-integration</option>
-              <option value="system-integration">system-integration</option>
-              <option value="acceptance">acceptance</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Format</label>
-            <select name="istqbFormat">
-              <option value="both">YAML + Markdown</option>
-              <option value="yaml">YAML only</option>
-              <option value="markdown">Markdown only</option>
-            </select>
-          </div>
-        </div>
-        <div class="hint">Writes a fillable template under <code>docs/test-cases/</code>. The YAML is executable via Run Suite once completed.</div>
-      </div>
-
-      <!-- ═══ BASELINES ═════════════════════════════════════════════════════ -->
-      <div class="cmd-section" id="sec-baselines">
-        <div class="sec">Visual Baselines</div>
-        <div class="field">
-          <label>Source Run ID *</label>
-          <select name="baselineRunId" id="baselines-select">
-            <option value="">— select a previous run —</option>
-          </select>
-          <div class="hint">Promotes that run's screenshots into the canonical baseline set.</div>
-        </div>
-        <div class="field">
-          <label>Screenshot name filter (optional)</label>
-          <input name="baselineShot" type="text" placeholder="e.g. dashboard — blank = all"/>
-        </div>
-      </div>
-
-      <!-- ═══ Provider (workflow, quick, rerun) ════════════════════════════ -->
-      <div class="cmd-section active provider-row" id="sec-provider">
+      <!-- ═══ AI Provider (workflow + generate-cases only) ═════════════════ -->
+      <div class="cmd-section provider-row" id="sec-provider">
         <div class="sec">AI Provider</div>
         <div class="field">
           <select name="provider">
@@ -1118,7 +832,7 @@ const PAGE_HTML = /* html */`<!doctype html>
           <span id="btn-label">Run</span>
           <div class="spinner" id="spinner"></div>
         </button>
-        <button type="button" class="btn-stop show" id="stop-btn" style="display:none" onclick="stopRun()">
+        <button type="button" class="btn-stop" id="stop-btn" onclick="stopRun()">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
           Stop
         </button>
@@ -1153,21 +867,14 @@ const PAGE_HTML = /* html */`<!doctype html>
 
 <script>
   const CMD_META = {
-    workflow:          { label:'Run Workflow',    desc:'Init project config → crawl → AI generate test cases → run suite → HTML report', provider:true },
-    quick:             { label:'Quick Run',       desc:'One-shot: URL only → auto-bootstrap config → run full pipeline', provider:true },
-    analyze:           { label:'Analyze Page',    desc:'Open a URL, take a screenshot and produce a PageAnalysis JSON', provider:false },
-    'auth-detect':     { label:'Detect Auth',     desc:'Visit the login page, detect form fields and generate an auth recipe YAML', provider:false },
-    rerun:             { label:'Rerun',            desc:'Re-execute scenarios from a previous run (failed-only or all)', provider:true },
-    'crawl-only':      { label:'Crawl Site',      desc:'Re-crawl site → update sitemap. Uses maxPages/maxDepth from project YAML. Does NOT regenerate test cases.', provider:false },
-    'generate-cases':  { label:'Generate Cases',  desc:'AI generates/updates test cases from latest sitemap. Existing blocks preserved unless scenario hash changes.', provider:true },
-    'gen-scripts':     { label:'Generate Scripts',desc:'Generate Python pytest or TypeScript Playwright scripts from existing test cases. Custom zones never overwritten.', provider:false },
-    'run-suite':       { label:'Run Suite',       desc:'Run YAML keyword test suite for selected project/role → HTML + JUnit report.', provider:false },
-    regression:        { label:'Run Regression',  desc:'Re-run the approved/promoted regression corpus (tests/regression) → HTML + JUnit report.', provider:false },
-    'istqb-template':  { label:'Make Template',   desc:'Scaffold an ISTQB-CTFL v4.0 test-case template (YAML + Markdown) for manual authoring.', provider:false },
-    baselines:         { label:'Accept Baselines',desc:'Promote a run\\'s screenshots into the canonical visual baseline set.', provider:false },
+    workflow:         { label:'Run Workflow',    desc:'Init project config → crawl site → AI generate test cases → run suite → HTML report', provider:true  },
+    'generate-cases': { label:'Generate Cases',  desc:'AI generates/updates test cases from the latest sitemap. Run Workflow first to crawl.', provider:true  },
+    'gen-scripts':    { label:'Generate Scripts',desc:'Generate Python pytest or TypeScript Playwright scripts from existing test cases. Custom zones are never overwritten.', provider:false },
+    'run-suite':      { label:'Run Suite',       desc:'Run YAML test suite for the selected project/role → HTML + JUnit report.', provider:false },
+    regression:       { label:'Run Regression',  desc:'Re-run the approved regression corpus (tests/regression) → HTML + JUnit report.', provider:false },
   };
 
-  let currentCmd = 'workflow';
+  let currentCmd  = 'workflow';
   let currentRunId = null;
   let es = null;
 
@@ -1182,8 +889,7 @@ const PAGE_HTML = /* html */`<!doctype html>
   const notice    = document.getElementById('files-notice');
   const filesList = document.getElementById('files-list');
 
-
-  // ── Target app reachability check ────────────────────────────────────────────
+  // ── Reachability check ────────────────────────────────────────────────────
   let _reachTimer = null;
   function scheduleReachCheck(url) {
     clearTimeout(_reachTimer);
@@ -1201,12 +907,11 @@ const PAGE_HTML = /* html */`<!doctype html>
       const d = await r.json();
       if (d.ok) {
         banner.className = 'reach-banner ok';
-        banner.textContent = '✓ Target app is reachable — ready to run workflow';
+        banner.textContent = '✓ Target app is reachable — ready to run';
       } else {
         banner.className = 'reach-banner fail';
         banner.innerHTML = '⚠ Target app not reachable (' + (d.reason || 'HTTP ' + d.status) + '). ' +
-          'Start the app first (e.g. <code>docker compose up</code> or <code>npm run fixture:serve</code>) ' +
-          'before running the workflow — auth will fail otherwise.';
+          'Start the app first (e.g. <code>docker compose up</code>) before running the workflow.';
       }
     } catch { banner.style.display = 'none'; }
   }
@@ -1219,31 +924,22 @@ const PAGE_HTML = /* html */`<!doctype html>
     currentCmd = cmd;
     document.getElementById('command-input').value = cmd;
 
-    // Toggle buttons
     document.querySelectorAll('.cmd-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.cmd === cmd));
 
-    // Toggle sections
     document.querySelectorAll('.cmd-section').forEach(s =>
       s.classList.remove('active'));
     const sec = document.getElementById('sec-' + cmd);
     if (sec) sec.classList.add('active');
 
-    // Provider row visibility
-    const providerRow = document.getElementById('sec-provider');
-    providerRow.classList.toggle('active', CMD_META[cmd]?.provider ?? false);
+    // Provider row only for workflow and generate-cases
+    document.getElementById('sec-provider').classList.toggle('active',
+      CMD_META[cmd]?.provider ?? false);
 
-    // Description
     document.getElementById('cmd-desc').textContent = CMD_META[cmd]?.desc ?? '';
-
-    // Button label
     btnLabel.textContent = CMD_META[cmd]?.label ?? 'Run';
 
-    // Load run IDs for rerun / baselines
-    if (cmd === 'rerun') loadRunIds();
-    if (cmd === 'baselines') loadRunIds('baselines-select');
-    // Load project/role dropdowns for step commands
-    if (['crawl-only','generate-cases','gen-scripts','run-suite'].includes(cmd)) loadProjects(cmd);
+    if (['generate-cases','gen-scripts','run-suite'].includes(cmd)) loadProjects(cmd);
   }
 
   let _projects = [];
@@ -1276,7 +972,7 @@ const PAGE_HTML = /* html */`<!doctype html>
         const opt = document.createElement('option');
         opt.value = r.name;
         const tags = [];
-        if (!r.hasCases)   tags.push('no cases');
+        if (!r.hasCases)    tags.push('no cases');
         if (!r.hasManifest) tags.push('no manifest');
         opt.textContent = r.name + (tags.length ? '  [' + tags.join(', ') + ']' : '');
         if (r.name === prev) opt.selected = true;
@@ -1284,20 +980,6 @@ const PAGE_HTML = /* html */`<!doctype html>
       });
       if (project.roles.length === 1) roleSel.value = project.roles[0].name;
     }
-  }
-
-  async function loadRunIds(selectId) {
-    const runs = await fetch('/runs').then(r => r.json()).catch(() => []);
-    const sel = document.getElementById(selectId || 'rerun-select');
-    if (!sel) return;
-    const prev = sel.value;
-    sel.innerHTML = '<option value="">— select a previous run —</option>';
-    runs.forEach(r => {
-      const opt = document.createElement('option');
-      opt.value = r.runId; opt.textContent = r.runId;
-      if (r.runId === prev) opt.selected = true;
-      sel.appendChild(opt);
-    });
   }
 
   form.addEventListener('submit', async (e) => {
@@ -1326,28 +1008,6 @@ const PAGE_HTML = /* html */`<!doctype html>
         submitLabel:   form.submitLabel.value.trim() || undefined,
         provider:      form.provider.value,
       });
-    } else if (cmd === 'quick') {
-      Object.assign(body, {
-        url:      form.quickUrl.value.trim(),
-        username: form.quickUsername.value.trim() || undefined,
-        password: form.quickPassword.value || undefined,
-        provider: form.provider.value,
-      });
-    } else if (cmd === 'analyze') {
-      Object.assign(body, { url: form.analyzeUrl.value.trim() });
-    } else if (cmd === 'auth-detect') {
-      Object.assign(body, { loginUrl: form.detectUrl.value.trim() });
-    } else if (cmd === 'rerun') {
-      Object.assign(body, {
-        fromRunId:  form.fromRunId.value,
-        failedOnly: form.failedOnly.checked,
-        provider:   form.provider.value,
-      });
-    } else if (cmd === 'crawl-only') {
-      Object.assign(body, {
-        project: form.crawlProject.value,
-        role:    form.crawlRole.value,
-      });
     } else if (cmd === 'generate-cases') {
       Object.assign(body, {
         project:  form.genCasesProject.value,
@@ -1362,34 +1022,20 @@ const PAGE_HTML = /* html */`<!doctype html>
       });
     } else if (cmd === 'run-suite') {
       Object.assign(body, {
-        project:  form.runSuiteProject.value,
-        role:     form.runSuiteRole.value,
-        browsers: form.runSuiteBrowsers.value,
-        a11y:     form.runSuiteA11y.checked,
-        vitals:   form.runSuiteVitals.checked,
+        project:         form.runSuiteProject.value,
+        role:            form.runSuiteRole.value,
+        browsers:        form.runSuiteBrowsers.value,
+        a11y:            form.runSuiteA11y.checked,
+        vitals:          form.runSuiteVitals.checked,
         securityHeaders: form.runSuiteSecHeaders.checked,
       });
     } else if (cmd === 'regression') {
       Object.assign(body, {
-        feature:  form.regFeature.value.trim() || undefined,
-        browsers: form.regBrowsers.value,
-        a11y:     form.regA11y.checked,
-        vitals:   form.regVitals.checked,
+        feature:         form.regFeature.value.trim() || undefined,
+        browsers:        form.regBrowsers.value,
+        a11y:            form.regA11y.checked,
+        vitals:          form.regVitals.checked,
         securityHeaders: form.regSecHeaders.checked,
-      });
-    } else if (cmd === 'istqb-template') {
-      Object.assign(body, {
-        project:   form.istqbProject.value.trim(),
-        pageUrl:   form.istqbPageUrl.value.trim() || undefined,
-        technique: form.istqbTechnique.value,
-        testLevel: form.istqbTestLevel.value,
-        testType:  form.istqbTestType.value,
-        format:    form.istqbFormat.value,
-      });
-    } else if (cmd === 'baselines') {
-      Object.assign(body, {
-        runId: form.baselineRunId.value,
-        shot:  form.baselineShot.value.trim() || undefined,
       });
     }
 
@@ -1439,7 +1085,7 @@ const PAGE_HTML = /* html */`<!doctype html>
         const code = parseInt(line.match(/exitCode=(-?\\d+)/)?.[1] ?? '-1', 10);
         setRunning(false);
         dot.className = 'dot ' + (code === 0 ? 'done' : 'error');
-        if (code === 0 && ['workflow','quick','rerun','run-suite','regression'].includes(cmd))
+        if (code === 0 && ['workflow','run-suite','regression'].includes(cmd))
           showReport(runId);
         loadReports();
         es.close(); return;
@@ -1468,9 +1114,9 @@ const PAGE_HTML = /* html */`<!doctype html>
   function setRunning(running) {
     form.querySelectorAll('input,select,button[type=submit]').forEach(el => el.disabled = running);
     document.querySelectorAll('.cmd-btn').forEach(b => b.disabled = running);
-    spinner.style.display = running ? 'block' : 'none';
-    btnLabel.textContent  = running ? 'Running…' : (CMD_META[currentCmd]?.label ?? 'Run');
-    stopBtn.style.display = running ? 'flex' : 'none';
+    spinner.style.display  = running ? 'block' : 'none';
+    btnLabel.textContent   = running ? 'Running…' : (CMD_META[currentCmd]?.label ?? 'Run');
+    stopBtn.style.display  = running ? 'flex' : 'none';
   }
 
   async function showReport(runId) {
