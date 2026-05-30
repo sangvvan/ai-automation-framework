@@ -163,6 +163,10 @@ function describeLocator(loc: Locator): string {
       return `text="${loc.text}"`;
     case "testId":
       return `testId=${loc.value}`;
+    case "css":
+      return `css=${loc.selector}`;
+    case "xpath":
+      return `xpath=${loc.selector}`;
   }
 }
 
