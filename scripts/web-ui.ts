@@ -2,7 +2,7 @@
  * Web UI — ai-automation-framework interactive runner.
  *
  * Supported commands:
- *   workflow        → init project YAML + auth YAML → full pipeline
+ *   workflow        → multi-role: init project + auth YAMLs → full pipeline
  *   generate-cases  → AI generate test cases from latest sitemap
  *   gen-scripts     → generate Python/TypeScript automation scripts
  *   run-suite       → run YAML test suite → HTML/JUnit report
@@ -77,69 +77,101 @@ function safeSlug(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
 }
 
-const PROVIDERS = ["gemini","claude","codex","ollama","lmstudio","mock"] as const;
-type Provider = typeof PROVIDERS[number];
+// ENV key for a role name: "Admin User" → "ADMIN_USER"
+function roleEnvKey(roleName: string): string {
+  return safeSlug(roleName).toUpperCase().replace(/-/g, "_");
+}
 
-// ─── Project / auth YAML generators ──────────────────────────────────────────
+const PROVIDERS = ["gemini","claude","codex","ollama","lmstudio","mock"] as const;
+
+// ─── Multi-role project file generator ───────────────────────────────────────
+
+interface RoleInput {
+  name:     string;
+  username?: string;
+  password?: string;
+  loginUrl?: string;
+}
+
+interface CreateProjectResult {
+  projectFile: string;
+  authFiles:   { role: string; path: string; credSource: string }[];
+}
 
 async function createProjectFiles(opts: {
-  projectName: string; baseUrl: string; loginUrl?: string;
-  roleName: string; username?: string; password?: string;
-  usernameLabel?: string; passwordLabel?: string; submitLabel?: string;
-}): Promise<{ projectFile: string; authFile?: string; credentialSource?: string }> {
+  projectName: string;
+  baseUrl:     string;
+  roles:       RoleInput[];
+}): Promise<CreateProjectResult> {
   const slug = safeSlug(opts.projectName);
-  const projectFilePath = path.join(rootDir, "inputs", "projects", `${slug}.yaml`);
+
+  // Preserve existing crawl config if project already exists
   let crawlCfg = { maxPages: 10, maxDepth: 3, maxConcurrency: 2, perHostQps: 2, includeSubdomains: false, ignoreRobots: false };
+  const projectFilePath = path.join(rootDir, "inputs", "projects", `${slug}.yaml`);
   if (existsSync(projectFilePath)) {
     try {
       const existing = parseYaml(await readFile(projectFilePath, "utf8")) as Record<string, unknown>;
       if (existing?.crawl && typeof existing.crawl === "object") Object.assign(crawlCfg, existing.crawl);
     } catch { /* use defaults */ }
   }
-  let authFile: string | undefined;
 
-  const effectiveUsername = opts.username || process.env.SITE_USERNAME || "";
-  const effectivePassword = opts.password || process.env.SITE_PASSWORD || "";
-  const credentialSource = opts.username
-    ? "form"
-    : effectiveUsername
-      ? "env (SITE_USERNAME / SITE_PASSWORD)"
-      : undefined;
+  await mkdir(path.join(rootDir, "inputs", "auth"), { recursive: true });
+  await mkdir(path.join(rootDir, "inputs", "projects"), { recursive: true });
 
-  if (effectiveUsername && effectivePassword) {
-    const loginUrl = opts.loginUrl || opts.baseUrl;
-    const recipe = {
-      id: slug, loginUrl,
-      fields: {
-        username: {
-          locator: { kind: "role", role: "textbox", name: opts.usernameLabel || "Email" },
-          value: "${SITE_USERNAME}",
+  const rolesYaml: { name: string; authRecipe?: string }[] = [];
+  const authFiles: CreateProjectResult["authFiles"] = [];
+
+  for (const role of opts.roles) {
+    const roleSlug = safeSlug(role.name);
+    const envKey   = roleEnvKey(role.name);
+
+    // Credential priority: form input → role-specific env var → SITE_* env var
+    const effectiveUsername = role.username || process.env[`${envKey}_USERNAME`] || process.env.SITE_USERNAME || "";
+    const effectivePassword = role.password || process.env[`${envKey}_PASSWORD`] || process.env.SITE_PASSWORD || "";
+    const credSource = role.username
+      ? "form"
+      : process.env[`${envKey}_USERNAME`]
+        ? `env (${envKey}_USERNAME)`
+        : process.env.SITE_USERNAME
+          ? "env (SITE_USERNAME)"
+          : "";
+
+    if (effectiveUsername && effectivePassword) {
+      // Auth recipe uses ${ENVKEY_USERNAME} / ${ENVKEY_PASSWORD} placeholders
+      // so the actual values are resolved from process.env at run time and
+      // never written into the YAML file.
+      const recipe = {
+        id: `${slug}-${roleSlug}`,
+        loginUrl: role.loginUrl || opts.baseUrl,
+        fields: {
+          username: {
+            locator: { kind: "role", role: "textbox", name: "Email" },
+            value: `\${${envKey}_USERNAME}`,
+          },
+          password: {
+            locator: { kind: "role", role: "textbox", name: "Password" },
+            value: `\${${envKey}_PASSWORD}`,
+          },
+          extras: [],
         },
-        password: {
-          locator: { kind: "role", role: "textbox", name: opts.passwordLabel || "Password" },
-          value: "${SITE_PASSWORD}",
-        },
-        extras: [],
-      },
-      submit: {
-        locator: { kind: "role", role: "button", name: opts.submitLabel || "Sign in" },
-      },
-      postLogin: { waitFor: [] },
-      expectsCaptcha: false,
-    };
-    authFile = path.join("inputs", "auth", `${slug}.yaml`);
-    await mkdir(path.join(rootDir, "inputs", "auth"), { recursive: true });
-    await writeFile(path.join(rootDir, authFile), stringifyYaml(recipe), "utf8");
+        submit:    { locator: { kind: "role", role: "button", name: "Sign in" } },
+        postLogin: { waitFor: [] },
+        expectsCaptcha: false,
+      };
+      const authRelPath = path.join("inputs", "auth", `${slug}-${roleSlug}.yaml`);
+      await writeFile(path.join(rootDir, authRelPath), stringifyYaml(recipe), "utf8");
+      authFiles.push({ role: role.name, path: authRelPath, credSource });
+      rolesYaml.push({ name: role.name, authRecipe: authRelPath });
+    } else {
+      rolesYaml.push({ name: role.name });
+    }
   }
 
-  const roleName = opts.roleName || (authFile ? "authenticated" : "anonymous");
-  const roles = authFile
-    ? [{ name: roleName, authRecipe: authFile }]
-    : [{ name: roleName }];
-
   const yaml = {
-    project: opts.projectName, baseUrl: opts.baseUrl, roles,
-    crawl: crawlCfg,
+    project: opts.projectName,
+    baseUrl:  opts.baseUrl,
+    roles:    rolesYaml,
+    crawl:    crawlCfg,
     generation: { outputDir: "tests/generated", maxScenariosPerPage: 14, fallbackSmoke: true },
     run: {
       testLevel: "system", browsers: ["chromium"], locales: [],
@@ -150,27 +182,27 @@ async function createProjectFiles(opts: {
   };
 
   const projectFile = path.join("inputs", "projects", `${slug}.yaml`);
-  await mkdir(path.join(rootDir, "inputs", "projects"), { recursive: true });
   await writeFile(path.join(rootDir, projectFile), stringifyYaml(yaml), "utf8");
-  return { projectFile, authFile, credentialSource };
+  return { projectFile, authFiles };
 }
 
 // ─── Input schemas ────────────────────────────────────────────────────────────
 
 const providerEnum = z.enum(PROVIDERS).default("gemini");
 
+const RoleInputSchema = z.object({
+  name:     z.string().min(1).max(40),
+  username: z.string().max(256).optional(),
+  password: z.string().max(1024).optional(),
+  loginUrl: z.string().optional(),
+});
+
 const WorkflowSchema = z.object({
-  command:       z.literal("workflow"),
-  projectName:   z.string().min(1).max(80),
-  baseUrl:       z.string().url(),
-  loginUrl:      z.string().optional(),
-  roleName:      z.string().max(40).default("authenticated"),
-  username:      z.string().max(256).optional(),
-  password:      z.string().max(1024).optional(),
-  usernameLabel: z.string().max(80).optional(),
-  passwordLabel: z.string().max(80).optional(),
-  submitLabel:   z.string().max(80).optional(),
-  provider:      providerEnum,
+  command:     z.literal("workflow"),
+  projectName: z.string().min(1).max(80),
+  baseUrl:     z.string().url(),
+  roles:       z.array(RoleInputSchema).min(1).max(20),
+  provider:    providerEnum,
 });
 
 const GenerateCasesSchema = z.object({
@@ -297,25 +329,41 @@ app.post("/run", async (req: Request, res: Response) => {
   let initNote: string | undefined;
 
   if (input.command === "workflow") {
-    let projectFile: string, authFile: string | undefined, credentialSource: string | undefined;
+    let result: CreateProjectResult;
     try {
-      ({ projectFile, authFile, credentialSource } = await createProjectFiles({
-        projectName:   input.projectName, baseUrl: input.baseUrl,
-        loginUrl:      input.loginUrl,    roleName: input.roleName,
-        username:      input.username,    password: input.password,
-        usernameLabel: input.usernameLabel,
-        passwordLabel: input.passwordLabel,
-        submitLabel:   input.submitLabel,
-      }));
+      result = await createProjectFiles({
+        projectName: input.projectName,
+        baseUrl:     input.baseUrl,
+        roles:       input.roles,
+      });
     } catch (err) {
       res.status(500).json({ error: `Config file creation failed: ${(err as Error).message}` });
       return;
     }
-    argv = ["vite-node", script, "workflow", "--input", path.resolve(rootDir, projectFile), "--skip-preflight"];
+
+    argv = ["vite-node", script, "workflow", "--input",
+      path.resolve(rootDir, result.projectFile), "--skip-preflight"];
     env.AI_TEST_DEFAULT_PROVIDER = input.provider;
-    env.SITE_USERNAME = input.username || process.env.SITE_USERNAME || "";
-    env.SITE_PASSWORD = input.password || process.env.SITE_PASSWORD || "";
-    initNote = JSON.stringify({ projectFile, authFile, credentialSource });
+
+    // Inject role-specific credentials so ${ROLENAME_USERNAME} / ${ROLENAME_PASSWORD}
+    // placeholders in auth recipes resolve correctly for every role.
+    for (const role of input.roles) {
+      const envKey = roleEnvKey(role.name);
+      if (role.username) env[`${envKey}_USERNAME`] = role.username;
+      if (role.password) env[`${envKey}_PASSWORD`] = role.password;
+      // First role also sets legacy SITE_USERNAME / SITE_PASSWORD
+      // so projects that still use the old placeholder keep working.
+      if (input.roles.indexOf(role) === 0) {
+        env.SITE_USERNAME = role.username || process.env.SITE_USERNAME || "";
+        env.SITE_PASSWORD = role.password || process.env.SITE_PASSWORD || "";
+      }
+    }
+
+    initNote = JSON.stringify({
+      projectFile: result.projectFile,
+      authFiles:   result.authFiles,
+      roles:       input.roles.length,
+    });
 
   } else if (input.command === "generate-cases") {
     const info = await readProjectInfo(input.project, input.role);
@@ -329,8 +377,6 @@ app.post("/run", async (req: Request, res: Response) => {
     }
     if (!sitemapPath) sitemapPath = await latestSitemapInDir(path.join(rootDir, "reports", "sitemaps"));
     if (!sitemapPath) { res.status(400).json({ error: "No sitemaps found. Run Workflow first to crawl the site." }); return; }
-    // Pin --output-dir to the slug-based directory so cases land exactly where
-    // Gen Scripts / Run Suite later read them.
     const genOutputDir = path.join(rootDir, info.outputDir, input.project, input.role);
     argv = ["vite-node", script, "generate", "--site-map", sitemapPath,
       "--project", info.name, "--role", input.role, "--output-dir", genOutputDir];
@@ -431,7 +477,7 @@ app.get("/projects", async (_req: Request, res: Response) => {
   const projectsDir = path.join(rootDir, "inputs", "projects");
   const result: {
     slug: string; name: string; baseUrl: string;
-    roles: { name: string; hasCases: boolean; hasManifest: boolean }[];
+    roles: { name: string; hasCases: boolean; hasManifest: boolean; hasAuthRecipe: boolean }[];
   }[] = [];
   try {
     for (const f of (await readdir(projectsDir)).filter(f => /\.ya?ml$/.test(f))) {
@@ -439,12 +485,13 @@ app.get("/projects", async (_req: Request, res: Response) => {
         const slug = f.replace(/\.ya?ml$/, "");
         const c = parseYaml(await readFile(path.join(projectsDir, f), "utf8")) as Record<string, unknown>;
         const outputDir = ((c.generation as Record<string, string>)?.outputDir) ?? "tests/generated";
-        const roles = ((c.roles as { name: string }[]) ?? []).map(r => {
+        const roles = ((c.roles as { name: string; authRecipe?: string }[]) ?? []).map(r => {
           const casesDir = path.join(rootDir, outputDir, slug, r.name);
           return {
             name: r.name,
-            hasCases: existsSync(casesDir),
-            hasManifest: existsSync(path.join(casesDir, "manifest.json")),
+            hasCases:     existsSync(casesDir),
+            hasManifest:  existsSync(path.join(casesDir, "manifest.json")),
+            hasAuthRecipe: !!(r.authRecipe && existsSync(path.join(rootDir, r.authRecipe))),
           };
         });
         result.push({ slug, name: (c.project as string) ?? slug, baseUrl: c.baseUrl as string, roles });
@@ -453,6 +500,25 @@ app.get("/projects", async (_req: Request, res: Response) => {
   } catch { /* no projects dir */ }
   result.sort((a, b) => a.name.localeCompare(b.name));
   res.json(result);
+});
+
+// ── GET /project-config/:slug — full config for workflow prefill ──────────────
+app.get("/project-config/:slug", async (req: Request<{ slug: string }>, res: Response) => {
+  const p = path.join(rootDir, "inputs", "projects", `${req.params.slug}.yaml`);
+  if (!existsSync(p)) { res.status(404).json({ error: "Not found" }); return; }
+  try {
+    const c = parseYaml(await readFile(p, "utf8")) as Record<string, unknown>;
+    res.json({
+      name:    (c.project as string) ?? req.params.slug,
+      baseUrl: c.baseUrl as string,
+      roles:   ((c.roles as { name: string; authRecipe?: string }[]) ?? []).map(r => ({
+        name: r.name,
+        hasAuthRecipe: !!(r.authRecipe && existsSync(path.join(rootDir, r.authRecipe))),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // ── GET /reports ──────────────────────────────────────────────────────────────
@@ -513,15 +579,15 @@ const PAGE_HTML = /* html */`<!doctype html>
     .hdr .sub{font-size:.78rem;color:var(--color-muted);margin-top:1px}
 
     .main{max-width:1280px;margin:0 auto;padding:28px 32px;
-      display:grid;grid-template-columns:400px 1fr;gap:24px;align-items:start}
-    @media(max-width:860px){.main{grid-template-columns:1fr;padding:20px 16px}}
+      display:grid;grid-template-columns:420px 1fr;gap:24px;align-items:start}
+    @media(max-width:900px){.main{grid-template-columns:1fr;padding:20px 16px}}
 
     .panel{background:var(--bg-card);border:1px solid var(--border);
       border-radius:12px;padding:22px;box-shadow:var(--shadow-sm)}
     .panel-title{font-size:.95rem;font-weight:700;margin-bottom:16px;
       padding-bottom:12px;border-bottom:1px solid var(--border)}
 
-    /* Command selector — 5 equal columns */
+    /* 5 command buttons */
     .cmd-selector{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:18px}
     .cmd-btn{padding:8px 4px;border:1px solid var(--border);border-radius:7px;
       background:var(--bg-card);color:var(--color-muted);font-family:var(--font);
@@ -533,14 +599,13 @@ const PAGE_HTML = /* html */`<!doctype html>
       color:var(--color-info-text)}
     .cmd-btn .icon{font-size:1.2rem;display:block;margin-bottom:4px}
 
-    /* Command description badge */
     .cmd-desc{font-size:.78rem;color:var(--color-muted);background:var(--color-sk-bg);
       border-radius:6px;padding:8px 10px;margin-bottom:16px;border-left:3px solid var(--color-info)}
 
-    /* Section labels */
     .sec{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
       color:var(--color-muted);margin:16px 0 10px;display:flex;align-items:center;gap:8px}
     .sec::after{content:'';flex:1;height:1px;background:var(--border)}
+    .sec-sub{font-weight:400;text-transform:none;font-size:.8rem;margin-left:4px}
 
     .field{margin-bottom:11px}
     .field label{display:block;font-size:.77rem;font-weight:600;
@@ -556,17 +621,32 @@ const PAGE_HTML = /* html */`<!doctype html>
     .field .hint{font-size:.72rem;color:var(--color-muted);margin-top:4px}
     .field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 
-    /* Check toggle */
     .check-row{display:flex;align-items:center;gap:8px;font-size:.85rem;
       font-weight:500;cursor:pointer;margin-bottom:11px}
     .check-row input{width:15px;height:15px;accent-color:var(--color-info)}
+
+    /* Role cards */
+    .role-card{border:1px solid var(--border);border-radius:9px;padding:12px 14px;
+      margin-bottom:10px;background:var(--color-sk-bg)}
+    .role-hdr{display:flex;align-items:center;justify-content:space-between;
+      margin-bottom:10px}
+    .role-hdr-label{font-size:.78rem;font-weight:700;color:var(--color-info-text)}
+    .btn-rm-role{border:none;background:none;cursor:pointer;color:var(--color-muted);
+      font-size:.85rem;padding:2px 6px;border-radius:4px;transition:color .15s}
+    .btn-rm-role:hover{color:var(--color-ko)}
+    .btn-rm-role:disabled{opacity:.3;cursor:not-allowed}
+    .badge-auth{font-size:.68rem;background:rgba(16,185,129,.12);color:#059669;
+      border:1px solid rgba(16,185,129,.3);border-radius:4px;padding:1px 6px;margin-left:6px}
+    .btn-add-role{width:100%;padding:8px;border:1px dashed var(--border);border-radius:7px;
+      background:none;color:var(--color-info-text);font-family:var(--font);
+      font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s;margin-bottom:4px}
+    .btn-add-role:hover{border-color:var(--color-info);background:var(--color-info-bg)}
 
     .btn-row{display:flex;gap:10px;margin-top:16px}
     .btn-run{flex:1;padding:11px;border-radius:8px;border:none;
       background:var(--color-info);color:#fff;font-family:var(--font);
       font-size:.9rem;font-weight:700;cursor:pointer;
-      display:flex;align-items:center;justify-content:center;gap:8px;
-      transition:opacity .2s}
+      display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .2s}
     .btn-run:hover{opacity:.88}
     .btn-run:disabled{opacity:.45;cursor:not-allowed}
     .btn-stop{padding:11px 14px;border-radius:8px;border:1px solid var(--color-ko);
@@ -574,7 +654,6 @@ const PAGE_HTML = /* html */`<!doctype html>
       font-size:.9rem;font-weight:700;cursor:pointer;
       display:none;align-items:center;gap:6px;transition:background .15s}
     .btn-stop:hover{background:rgba(239,68,68,.16)}
-    .btn-stop.show{display:flex}
 
     @keyframes spin{to{transform:rotate(360deg)}}
     .spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
@@ -584,18 +663,19 @@ const PAGE_HTML = /* html */`<!doctype html>
       background:var(--color-sk-bg);border:1px solid var(--border);
       font-size:.77rem;color:var(--color-muted);display:none}
     .files-notice code{font-family:monospace;color:var(--color-info-text)}
+    .role-summary{margin-top:4px}
+    .role-chip{display:inline-block;background:rgba(59,130,246,.1);
+      color:var(--color-info-text);border-radius:4px;padding:1px 7px;
+      font-size:.71rem;font-weight:600;margin:2px 3px 2px 0}
+    .role-chip.has-auth{background:rgba(16,185,129,.1);color:#059669}
 
-    /* Target app reachability banner */
     .reach-banner{margin-bottom:14px;padding:8px 11px;border-radius:7px;
       font-size:.77rem;display:none;align-items:center;gap:8px}
-    .reach-banner.ok{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3);
-      color:#059669}
-    .reach-banner.fail{background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);
-      color:var(--color-ko)}
-    .reach-banner.checking{background:var(--color-sk-bg);border:1px solid var(--border);
-      color:var(--color-muted)}
+    .reach-banner.ok{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3);color:#059669}
+    .reach-banner.fail{background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);color:var(--color-ko)}
+    .reach-banner.checking{background:var(--color-sk-bg);border:1px solid var(--border);color:var(--color-muted)}
 
-    /* Right panel */
+    /* Log panel */
     .log-panel .panel-title{display:flex;justify-content:space-between;align-items:center}
     .dot{width:9px;height:9px;border-radius:50%;background:var(--border);transition:background .3s}
     .dot.running{background:var(--color-warn);animation:pulse 1s ease-in-out infinite}
@@ -632,7 +712,6 @@ const PAGE_HTML = /* html */`<!doctype html>
     .ftr{margin-top:40px;border-top:1px solid var(--border);
       padding:16px 32px;font-size:.78rem;color:var(--color-muted);text-align:center}
 
-    /* Dynamic sections */
     .cmd-section{display:none}
     .cmd-section.active{display:block}
   </style>
@@ -652,11 +731,9 @@ const PAGE_HTML = /* html */`<!doctype html>
 </header>
 
 <main class="main">
-  <!-- Left panel -->
   <div class="panel">
     <div class="panel-title">Configure</div>
 
-    <!-- 5 command buttons -->
     <div class="cmd-selector">
       <button type="button" class="cmd-btn active" data-cmd="workflow" onclick="setCmd('workflow')">
         <span class="icon">🔄</span>Workflow
@@ -682,40 +759,33 @@ const PAGE_HTML = /* html */`<!doctype html>
 
       <!-- ═══ WORKFLOW ════════════════════════════════════════════════════════ -->
       <div class="cmd-section active" id="sec-workflow">
+
+        <!-- Load existing project -->
+        <div class="sec">Existing Project <span class="sec-sub">(optional — prefill form)</span></div>
+        <div class="field">
+          <select id="existing-proj-select" onchange="prefillFromProject(this.value)">
+            <option value="">— select to load a saved project —</option>
+          </select>
+          <div class="hint">Loads project name, base URL and role names. Add passwords if needed.</div>
+        </div>
+
         <div class="sec">Project</div>
         <div class="field">
           <label>Project Name *</label>
-          <input name="projectName" type="text" placeholder="My App"/>
-          <div class="hint">Creates <code>inputs/projects/my-app.yaml</code></div>
+          <input id="wf-projectName" name="projectName" type="text" placeholder="My App"/>
+          <div class="hint">Creates <code>inputs/projects/&lt;slug&gt;.yaml</code></div>
         </div>
         <div class="field">
           <label>Base URL *</label>
-          <input name="baseUrl" type="url" placeholder="https://myapp.com" id="baseUrl-input" oninput="scheduleReachCheck(this.value)"/>
+          <input id="wf-baseUrl" name="baseUrl" type="url" placeholder="https://myapp.com"
+            oninput="scheduleReachCheck(this.value)"/>
           <div class="reach-banner" id="reach-banner"></div>
         </div>
 
-        <div class="sec">Authentication <span style="font-weight:400;text-transform:none;font-size:.8rem">(optional)</span></div>
-        <div class="field">
-          <label>Login URL</label>
-          <input name="loginUrl" type="url" placeholder="https://myapp.com/login"/>
-        </div>
-        <div class="field">
-          <label>Role Name</label>
-          <input name="roleName" type="text" placeholder="authenticated" value="authenticated"/>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>Username / Email</label>
-            <input name="username" type="text" placeholder="admin@example.com" autocomplete="off"/>
-          </div>
-          <div class="field">
-            <label>Password</label>
-            <input name="password" type="password" placeholder="••••••••" autocomplete="new-password"/>
-          </div>
-        </div>
-        <input name="usernameLabel" type="hidden" value=""/>
-        <input name="passwordLabel" type="hidden" value=""/>
-        <input name="submitLabel" type="hidden" value=""/>
+        <!-- Dynamic roles list -->
+        <div class="sec">Roles &amp; Accounts</div>
+        <div id="roles-list"></div>
+        <button type="button" class="btn-add-role" onclick="addRole()">+ Add Role</button>
       </div>
 
       <!-- ═══ GENERATE CASES ════════════════════════════════════════════════ -->
@@ -733,7 +803,7 @@ const PAGE_HTML = /* html */`<!doctype html>
             <select name="genCasesRole" id="generate-cases-role"><option value="">— select —</option></select>
           </div>
         </div>
-        <div class="hint">AI generates test cases from the latest sitemap. Existing cases are preserved unless the scenario hash changes.</div>
+        <div class="hint">AI generates test cases from the latest sitemap. Run Workflow first to crawl.</div>
       </div>
 
       <!-- ═══ GENERATE SCRIPTS ══════════════════════════════════════════════ -->
@@ -811,7 +881,7 @@ const PAGE_HTML = /* html */`<!doctype html>
         <label class="check-row"><input type="checkbox" name="regSecHeaders"/> Security headers</label>
       </div>
 
-      <!-- ═══ AI Provider (workflow + generate-cases only) ═════════════════ -->
+      <!-- AI Provider — workflow + generate-cases only -->
       <div class="cmd-section provider-row" id="sec-provider">
         <div class="sec">AI Provider</div>
         <div class="field">
@@ -838,9 +908,7 @@ const PAGE_HTML = /* html */`<!doctype html>
         </button>
       </div>
 
-      <div class="files-notice" id="files-notice">
-        <strong>Generated:</strong>&nbsp;<span id="files-list"></span>
-      </div>
+      <div class="files-notice" id="files-notice"></div>
     </form>
   </div>
 
@@ -867,10 +935,10 @@ const PAGE_HTML = /* html */`<!doctype html>
 
 <script>
   const CMD_META = {
-    workflow:         { label:'Run Workflow',    desc:'Init project config → crawl site → AI generate test cases → run suite → HTML report', provider:true  },
+    workflow:         { label:'Run Workflow',    desc:'Multi-role: crawl → AI generate test cases → run suite → HTML report for every role', provider:true  },
     'generate-cases': { label:'Generate Cases',  desc:'AI generates/updates test cases from the latest sitemap. Run Workflow first to crawl.', provider:true  },
-    'gen-scripts':    { label:'Generate Scripts',desc:'Generate Python pytest or TypeScript Playwright scripts from existing test cases. Custom zones are never overwritten.', provider:false },
-    'run-suite':      { label:'Run Suite',       desc:'Run YAML test suite for the selected project/role → HTML + JUnit report.', provider:false },
+    'gen-scripts':    { label:'Generate Scripts',desc:'Generate Python pytest or TypeScript Playwright scripts from existing test cases.', provider:false },
+    'run-suite':      { label:'Run Suite',       desc:'Run YAML test suite for a selected project/role → HTML + JUnit report.', provider:false },
     regression:       { label:'Run Regression',  desc:'Re-run the approved regression corpus (tests/regression) → HTML + JUnit report.', provider:false },
   };
 
@@ -887,7 +955,6 @@ const PAGE_HTML = /* html */`<!doctype html>
   const btnLabel  = document.getElementById('btn-label');
   const dot       = document.getElementById('dot');
   const notice    = document.getElementById('files-notice');
-  const filesList = document.getElementById('files-list');
 
   // ── Reachability check ────────────────────────────────────────────────────
   let _reachTimer = null;
@@ -910,15 +977,117 @@ const PAGE_HTML = /* html */`<!doctype html>
         banner.textContent = '✓ Target app is reachable — ready to run';
       } else {
         banner.className = 'reach-banner fail';
-        banner.innerHTML = '⚠ Target app not reachable (' + (d.reason || 'HTTP ' + d.status) + '). ' +
-          'Start the app first (e.g. <code>docker compose up</code>) before running the workflow.';
+        banner.innerHTML = '⚠ Not reachable (' + (d.reason || 'HTTP ' + d.status) + '). ' +
+          'Start the app first before running the workflow.';
       }
     } catch { banner.style.display = 'none'; }
+  }
+
+  // ── Roles management ─────────────────────────────────────────────────────
+  let _roleSeq = 0;
+  const _roleIds = [];   // ordered list of active role IDs
+
+  function addRole(prefill) {
+    const id = ++_roleSeq;
+    _roleIds.push(id);
+    const div = document.createElement('div');
+    div.className = 'role-card';
+    div.id = 'role-' + id;
+    div.innerHTML = \`
+      <div class="role-hdr">
+        <span class="role-hdr-label">Role \${_roleIds.length}\${prefill?.hasAuthRecipe ? '<span class="badge-auth">auth ✓</span>':''}</span>
+        <button type="button" class="btn-rm-role" onclick="removeRole(\${id})" title="Remove role">✕</button>
+      </div>
+      <div class="field">
+        <label>Role Name *</label>
+        <input data-f="name" type="text" placeholder="admin" value="\${prefill?.name||''}"/>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Username / Email</label>
+          <input data-f="username" type="text" placeholder="user@example.com" autocomplete="off" value="\${prefill?.username||''}"/>
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input data-f="password" type="password" placeholder="••••••••" autocomplete="new-password"/>
+        </div>
+      </div>
+      <div class="field">
+        <label>Login URL <span style="font-weight:400;font-size:.75rem">(optional — if different from base URL)</span></label>
+        <input data-f="loginUrl" type="url" placeholder="" value="\${prefill?.loginUrl||''}"/>
+      </div>\`;
+    document.getElementById('roles-list').appendChild(div);
+    updateRemoveButtons();
+  }
+
+  function removeRole(id) {
+    const idx = _roleIds.indexOf(id);
+    if (idx === -1 || _roleIds.length <= 1) return;
+    _roleIds.splice(idx, 1);
+    document.getElementById('role-' + id)?.remove();
+    // Re-label remaining roles
+    _roleIds.forEach((rid, i) => {
+      const lbl = document.querySelector('#role-' + rid + ' .role-hdr-label');
+      if (lbl) lbl.firstChild.textContent = 'Role ' + (i + 1);
+    });
+    updateRemoveButtons();
+  }
+
+  function updateRemoveButtons() {
+    document.querySelectorAll('.btn-rm-role').forEach(b => {
+      b.disabled = _roleIds.length <= 1;
+    });
+  }
+
+  function collectRoles() {
+    return _roleIds.map(id => {
+      const card = document.getElementById('role-' + id);
+      return {
+        name:     card.querySelector('[data-f="name"]').value.trim(),
+        username: card.querySelector('[data-f="username"]').value.trim() || undefined,
+        password: card.querySelector('[data-f="password"]').value || undefined,
+        loginUrl: card.querySelector('[data-f="loginUrl"]').value.trim() || undefined,
+      };
+    }).filter(r => r.name);
+  }
+
+  // ── Prefill from existing project ─────────────────────────────────────────
+  async function prefillFromProject(slug) {
+    if (!slug) return;
+    try {
+      const cfg = await fetch('/project-config/' + slug).then(r => r.json());
+      document.getElementById('wf-projectName').value = cfg.name || '';
+      document.getElementById('wf-baseUrl').value = cfg.baseUrl || '';
+      scheduleReachCheck(cfg.baseUrl || '');
+
+      // Clear existing roles and prefill from project
+      _roleIds.length = 0;
+      document.getElementById('roles-list').innerHTML = '';
+      _roleSeq = 0;
+      for (const role of (cfg.roles || [])) {
+        addRole({ name: role.name, hasAuthRecipe: role.hasAuthRecipe });
+      }
+      if (_roleIds.length === 0) addRole();
+    } catch {
+      // ignore fetch errors — user can still fill manually
+    }
   }
 
   // Boot
   setCmd('workflow');
   loadReports();
+  loadExistingProjects();
+
+  async function loadExistingProjects() {
+    const projects = await fetch('/projects').then(r => r.json()).catch(() => []);
+    const sel = document.getElementById('existing-proj-select');
+    projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.slug;
+      opt.textContent = p.name + '  (' + p.baseUrl + ')  — ' + p.roles.length + ' role(s)';
+      sel.appendChild(opt);
+    });
+  }
 
   function setCmd(cmd) {
     currentCmd = cmd;
@@ -926,20 +1095,20 @@ const PAGE_HTML = /* html */`<!doctype html>
 
     document.querySelectorAll('.cmd-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.cmd === cmd));
-
     document.querySelectorAll('.cmd-section').forEach(s =>
       s.classList.remove('active'));
     const sec = document.getElementById('sec-' + cmd);
     if (sec) sec.classList.add('active');
 
-    // Provider row only for workflow and generate-cases
     document.getElementById('sec-provider').classList.toggle('active',
       CMD_META[cmd]?.provider ?? false);
-
     document.getElementById('cmd-desc').textContent = CMD_META[cmd]?.desc ?? '';
     btnLabel.textContent = CMD_META[cmd]?.label ?? 'Run';
 
     if (['generate-cases','gen-scripts','run-suite'].includes(cmd)) loadProjects(cmd);
+
+    // Init default role on first Workflow activation
+    if (cmd === 'workflow' && _roleIds.length === 0) addRole({ name: 'authenticated' });
   }
 
   let _projects = [];
@@ -996,17 +1165,16 @@ const PAGE_HTML = /* html */`<!doctype html>
     let body = { command: cmd };
 
     if (cmd === 'workflow') {
+      const roles = collectRoles();
+      if (!roles.length) {
+        appendLog('[ERROR] Add at least one role before running.');
+        setRunning(false); dot.className = 'dot error'; return;
+      }
       Object.assign(body, {
-        projectName:   form.projectName.value.trim(),
-        baseUrl:       form.baseUrl.value.trim(),
-        loginUrl:      form.loginUrl.value.trim() || undefined,
-        roleName:      form.roleName.value.trim() || 'authenticated',
-        username:      form.username.value.trim() || undefined,
-        password:      form.password.value || undefined,
-        usernameLabel: form.usernameLabel.value.trim() || undefined,
-        passwordLabel: form.passwordLabel.value.trim() || undefined,
-        submitLabel:   form.submitLabel.value.trim() || undefined,
-        provider:      form.provider.value,
+        projectName: document.getElementById('wf-projectName').value.trim(),
+        baseUrl:     document.getElementById('wf-baseUrl').value.trim(),
+        roles,
+        provider:    form.provider.value,
       });
     } else if (cmd === 'generate-cases') {
       Object.assign(body, {
@@ -1062,13 +1230,21 @@ const PAGE_HTML = /* html */`<!doctype html>
     if (data.initNote) {
       try {
         const f = JSON.parse(data.initNote);
-        let html = [f.projectFile, f.authFile].filter(Boolean)
-          .map(p => '<code>' + p + '</code>').join(' &nbsp;·&nbsp; ');
-        if (f.authFile && f.credentialSource)
-          html += ' &nbsp;<span style="color:var(--color-ok)">✓ credentials from ' + f.credentialSource + '</span>';
-        if (!f.authFile)
-          html += ' &nbsp;<span style="color:var(--color-warn)">⚠ no auth — add SITE_USERNAME/SITE_PASSWORD to .env or fill in the credentials fields</span>';
-        filesList.innerHTML = html;
+        // Show project file + per-role auth summary
+        let html = '<strong>Created:</strong> <code>' + f.projectFile + '</code>';
+        if (f.authFiles && f.authFiles.length) {
+          html += '<div class="role-summary">';
+          f.authFiles.forEach(a => {
+            html += '<span class="role-chip has-auth">' + a.role + ' ✓ auth</span>';
+          });
+          html += '</div>';
+        }
+        const noAuth = f.roles - (f.authFiles?.length || 0);
+        if (noAuth > 0) {
+          html += '<div style="margin-top:4px;font-size:.72rem;color:var(--color-warn)">'
+            + '⚠ ' + noAuth + ' role(s) have no credentials — they will run anonymously.</div>';
+        }
+        notice.innerHTML = html;
         notice.style.display = 'block';
       } catch {}
     }
